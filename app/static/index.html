@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dairy Farm Manager</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div id="toasts" aria-live="polite"></div>
+
+  <!-- ============ LOGIN ============ -->
+  <section id="login-view" class="login-wrap" hidden>
+    <form id="login-form" class="card login-card" hidden>
+      <h1>🐄 Dairy Farm Manager</h1>
+      <p class="muted">Sign in to continue</p>
+      <label>Username
+        <input name="username" required autocomplete="username" autocapitalize="none">
+      </label>
+      <label>Password
+        <input name="password" type="password" required autocomplete="current-password">
+      </label>
+      <p id="login-error" class="msg error" role="alert" hidden></p>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form>
+
+    <form id="setup-form" class="card login-card" hidden>
+      <h1>🐄 Welcome!</h1>
+      <p class="muted">First-time setup: create the <strong>owner</strong> account for your farm. You will add your milker and shop attendant afterwards.</p>
+      <label>Farm or business name <input name="business_name" required maxlength="150"></label>
+      <label>Farm name <input name="farm_name" value="Main Farm" maxlength="150"></label>
+      <label>Shop name <input name="shop_name" value="Main Shop" maxlength="150"></label>
+      <label>Your full name <input name="full_name" required maxlength="150" autocomplete="name"></label>
+      <label>Choose a username <input name="username" required autocomplete="username" autocapitalize="none" maxlength="40"></label>
+      <label>Choose a password (at least 8 characters) <input name="password" type="password" required minlength="8" autocomplete="new-password"></label>
+      <label>Repeat the password <input name="password2" type="password" required minlength="8" autocomplete="new-password"></label>
+      <p id="setup-error" class="msg error" role="alert" hidden></p>
+      <button class="btn primary" type="submit">Create owner account</button>
+    </form>
+  </section>
+
+  <!-- ============ APP ============ -->
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <div class="brand">🐄 <span id="biz-name">Dairy Farm Manager</span></div>
+      <div class="topbar-right">
+        <button id="bell" class="icon-btn" title="Alerts" aria-label="Alerts">🔔<span id="bell-badge" class="badge" hidden>0</span></button>
+        <span id="who" class="muted"></span>
+        <button id="logout" class="btn small">Log out</button>
+      </div>
+    </header>
+    <nav id="nav" class="tabs" aria-label="Main"></nav>
+
+    <main>
+      <!-- ---------- Owner dashboard ---------- -->
+      <section id="view-dashboard" class="view" hidden>
+        <div class="card toolbar">
+          <label>From <input type="date" id="d-from"></label>
+          <label>To <input type="date" id="d-to"></label>
+          <button class="btn primary" id="d-apply">Apply</button>
+          <div class="chips">
+            <button class="chip" data-days="7">7 days</button>
+            <button class="chip" data-days="14">14 days</button>
+            <button class="chip" data-days="30">30 days</button>
+          </div>
+        </div>
+
+        <div id="kpis" class="kpis"></div>
+
+        <div class="grid2">
+          <div class="card"><h3>Milk produced by session (litres)</h3>
+            <div class="chart-box" data-empty="No production recorded in this period"><canvas id="ch-production"></canvas></div></div>
+          <div class="card"><h3>Sent to shop vs received (litres)</h3>
+            <div class="chart-box" data-empty="No shop dispatches in this period"><canvas id="ch-flow"></canvas></div></div>
+          <div class="card"><h3>Where dispatched milk went (litres)</h3>
+            <div class="chart-box" data-empty="No dispatches in this period"><canvas id="ch-types"></canvas></div></div>
+          <div class="card"><h3>External sales revenue (KSh)</h3>
+            <div class="chart-box" data-empty="No external sales in this period"><canvas id="ch-revenue"></canvas></div></div>
+        </div>
+
+        <div class="grid2">
+          <div class="card"><h3>Shop sales revenue by product (KSh)</h3>
+            <div class="chart-box" data-empty="No shop sales in this period"><canvas id="ch-shop-sales"></canvas></div></div>
+          <div class="card"><h3>Stock closings needing your review</h3>
+            <div class="table-wrap"><table id="tbl-review"></table></div></div>
+        </div>
+
+        <div class="card"><h3>Dispatches needing attention</h3>
+          <div class="table-wrap"><table id="tbl-issues"></table></div></div>
+        <div class="card"><h3>Current stock (from the stock ledger)</h3>
+          <div class="table-wrap"><table id="tbl-stock"></table></div></div>
+      </section>
+
+      <!-- ---------- Production ---------- -->
+      <section id="view-production" class="view" hidden>
+        <div class="grid2">
+          <form id="prod-form" class="card">
+            <h3>Record milk production</h3>
+            <label id="prod-farm-wrap">Farm <select name="farm_id"></select></label>
+            <label>Date <input type="date" name="production_date" required></label>
+            <label>Session
+              <select name="session">
+                <option value="MORNING">Morning</option>
+                <option value="LUNCH">Lunch</option>
+                <option value="EVENING">Evening</option>
+              </select></label>
+            <label>Quantity (litres)
+              <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save production</button>
+          </form>
+          <div class="card"><h3>Milk at the farm now</h3><div id="farm-stock" class="stock-list"></div></div>
+        </div>
+        <div class="card"><h3>Recent production</h3>
+          <div class="table-wrap"><table id="tbl-prod"></table></div></div>
+      </section>
+
+      <!-- ---------- Dispatch ---------- -->
+      <section id="view-dispatch" class="view" hidden>
+        <form id="disp-form" class="card">
+          <h3>Dispatch milk from the farm</h3>
+          <div class="grid2">
+            <div>
+              <label id="disp-farm-wrap">Farm <select name="farm_id"></select></label>
+              <fieldset>
+                <legend>Where is it going?</legend>
+                <label class="inline"><input type="radio" name="destination_type" value="SHOP" checked> Our shop</label>
+                <label class="inline"><input type="radio" name="destination_type" value="EXTERNAL"> Somewhere else</label>
+              </fieldset>
+              <div id="disp-shop-box">
+                <label>Shop <select name="destination_shop_id"></select></label>
+              </div>
+              <div id="disp-ext-box" hidden>
+                <label>Buyer / destination name <input name="destination_name" maxlength="150"></label>
+                <fieldset>
+                  <legend>Is this dispatch a sale?</legend>
+                  <label class="inline"><input type="radio" name="is_sale" value="yes" checked> Yes, a sale</label>
+                  <label class="inline"><input type="radio" name="is_sale" value="no"> No</label>
+                </fieldset>
+                <p id="disp-sale-box" class="hint">The owner-set fresh milk price will be used.</p>
+                <div id="disp-nonsale-box" hidden>
+                  <label>Reason
+                    <select name="reason_kind">
+                      <option>Household consumption</option>
+                      <option>Sample</option>
+                      <option>Donation</option>
+                      <option>Other authorised use</option>
+                    </select></label>
+                  <label>More detail (optional) <input name="reason_detail" maxlength="150"></label>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label>Date and time <input type="datetime-local" name="dispatched_at" required></label>
+              <label>Quantity (litres)
+                <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+              <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              <div class="stock-list" id="disp-farm-stock"></div>
+            </div>
+          </div>
+          <p class="msg" role="alert" hidden></p>
+          <button class="btn primary" type="submit">Save dispatch</button>
+        </form>
+        <div class="card"><h3>Recent dispatches</h3>
+          <div class="table-wrap"><table id="tbl-disp"></table></div></div>
+      </section>
+
+      <!-- ---------- Receive milk ---------- -->
+      <section id="view-receipts" class="view" hidden>
+        <div class="grid2">
+          <form id="rec-form" class="card">
+            <h3>Record milk received at the shop</h3>
+            <label id="rec-shop-wrap">Shop <select name="shop_id"></select></label>
+            <label>Which dispatch?
+              <select name="dispatch_id" id="rec-dispatch" required></select></label>
+            <label>Quantity actually received (litres)
+              <input name="quantity_litres" type="number" step="0.001" min="0" inputmode="decimal" required></label>
+            <p class="hint" id="rec-diff" hidden></p>
+            <label>Date and time received <input type="datetime-local" name="received_at" required></label>
+            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save receipt</button>
+          </form>
+          <div class="card"><h3>Milk at the shop now</h3><div id="shop-stock" class="stock-list"></div></div>
+        </div>
+        <div class="card"><h3>Recent receipts</h3>
+          <div class="table-wrap"><table id="tbl-rec"></table></div></div>
+      </section>
+
+
+      <!-- ---------- Processing ---------- -->
+      <section id="view-processing" class="view" hidden>
+        <div class="grid2">
+          <form id="proc-form" class="card">
+            <h3>Record yoghurt or maziwa mala making</h3>
+            <label id="proc-shop-wrap">Shop <select name="shop_id"></select></label>
+            <label>What did you make?
+              <select name="product_type"><option value="YOGHURT">Yoghurt</option><option value="MAZIWA_MALA">Maziwa mala</option></select></label>
+            <label>Fresh milk used (litres)
+              <input name="input_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+            <label>Amount actually produced (litres)
+              <input name="output_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+            <p class="hint">Enter what really came out. It does not have to equal the milk used.</p>
+            <label>Date and time <input type="datetime-local" name="processed_at" required></label>
+            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save processing</button>
+          </form>
+          <div class="card"><h3>Stock at the shop now</h3><div id="proc-stock" class="stock-list"></div></div>
+        </div>
+        <div class="card"><h3>Recent processing</h3><div class="table-wrap"><table id="tbl-proc"></table></div></div>
+      </section>
+
+      <!-- ---------- Sales ---------- -->
+      <section id="view-sales" class="view" hidden>
+        <div class="grid2">
+          <form id="sale-form" class="card">
+            <h3>Record sales</h3>
+            <label id="sale-shop-wrap">Shop <select name="shop_id"></select></label>
+            <label>Sale date <input type="date" name="sale_date" required></label>
+            <div id="sale-lines"></div>
+            <button type="button" class="btn small" id="sale-add">+ Add another line</button>
+            <p class="hint">Leave the price empty to use the list price. If a product was sold at a different price, add it as its own line and type that price.</p>
+            <p>Total: <strong id="sale-total">KSh 0.00</strong></p>
+            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save sales</button>
+          </form>
+          <div class="card"><h3>Stock at the shop now</h3><div id="sale-stock" class="stock-list"></div></div>
+        </div>
+        <div id="owner-direct-sale" class="card" hidden>
+          <div class="grid2">
+            <form id="direct-sale-form" class="card">
+              <h3>Sell fresh milk to a buyer</h3>
+              <p class="hint">Milk is deducted from the farm. The price starts at the shop list price; change it for this buyer if needed.</p>
+              <label id="direct-sale-farm-wrap">Farm <select name="farm_id"></select></label>
+              <label>Buyer <input name="destination_name" maxlength="150" required></label>
+              <label>Quantity (litres) <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+              <label>Price per litre (KSh) <input name="price_per_litre" type="number" step="0.01" min="0.01" inputmode="decimal" required></label>
+              <p>Total: <strong id="direct-sale-total">KSh 0.00</strong></p>
+              <label>When <input name="dispatched_at" type="datetime-local" required></label>
+              <label>Has the buyer paid?
+                <select name="payment_status"><option value="UNPAID">No — unpaid</option><option value="PAID">Yes — paid</option></select></label>
+              <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              <p class="msg" role="alert" hidden></p>
+              <button class="btn primary" type="submit">Record buyer sale</button>
+            </form>
+            <form id="farm-use-form" class="card">
+              <h3>Record milk taken for personal use</h3>
+              <p class="hint">This is deducted from farm stock and is not recorded as revenue.</p>
+              <label id="farm-use-farm-wrap">Farm <select name="farm_id"></select></label>
+              <label>Quantity (litres) <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+              <label>When <input name="dispatched_at" type="datetime-local" required></label>
+              <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              <p class="msg" role="alert" hidden></p>
+              <button class="btn primary" type="submit">Record personal use</button>
+            </form>
+          </div>
+          <h3>Buyer sales</h3>
+          <div class="table-wrap"><table id="tbl-direct-sales"></table></div>
+          <h3>Personal-use withdrawals</h3>
+          <div class="table-wrap"><table id="tbl-farm-use"></table></div>
+        </div>
+        <div class="card"><h3>Recent sales</h3><div class="table-wrap"><table id="tbl-sales"></table></div></div>
+      </section>
+
+      <!-- ---------- Losses ---------- -->
+      <section id="view-losses" class="view" hidden>
+        <div class="grid2">
+          <form id="loss-form" class="card">
+            <h3>Record spoiled or lost stock</h3>
+            <label id="loss-shop-wrap">Shop <select name="shop_id"></select></label>
+            <label>Product
+              <select name="product_type"><option value="FRESH_MILK">Fresh milk</option><option value="YOGHURT">Yoghurt</option><option value="MAZIWA_MALA">Maziwa mala</option></select></label>
+            <label>Quantity lost (litres)
+              <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
+            <label>Reason
+              <select name="loss_reason"><option value="SPOILAGE">Spoilage</option><option value="EXPIRY">Expiry</option><option value="SPILLAGE">Spillage</option><option value="OTHER">Other</option></select></label>
+            <label>When <input type="datetime-local" name="occurred_at" required></label>
+            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save loss</button>
+          </form>
+          <div class="card"><h3>Stock at the shop now</h3><div id="loss-stock" class="stock-list"></div></div>
+        </div>
+        <div class="card"><h3>Recent losses</h3><div class="table-wrap"><table id="tbl-loss"></table></div></div>
+      </section>
+
+      <!-- ---------- Daily closing ---------- -->
+      <section id="view-closing" class="view" hidden>
+        <p id="closing-banner" class="msg" hidden></p>
+        <div class="grid2">
+          <form id="close-form" class="card">
+            <h3>Close the day: count the stock</h3>
+            <label id="close-shop-wrap">Shop <select name="shop_id"></select></label>
+            <label>Day to close <input type="date" name="closing_date" required></label>
+            <p class="hint">Count what is physically in the shop. Enter 0 if there is none. The system works out the expected figure and compares afterwards.</p>
+            <label>Fresh milk counted (litres)
+              <input name="count_FRESH_MILK" type="number" step="0.001" min="0" inputmode="decimal" required></label>
+            <label>Yoghurt counted (litres)
+              <input name="count_YOGHURT" type="number" step="0.001" min="0" inputmode="decimal" required></label>
+            <label>Maziwa mala counted (litres)
+              <input name="count_MAZIWA_MALA" type="number" step="0.001" min="0" inputmode="decimal" required></label>
+            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Submit closing</button>
+          </form>
+          <div class="card"><h3>Result</h3>
+            <div id="close-result" class="muted">Submit a closing to see how your count compares.</div></div>
+        </div>
+        <div class="card"><h3>Closings</h3><div class="table-wrap"><table id="tbl-closings"></table></div></div>
+      </section>
+
+      <!-- ---------- Prices (owner) ---------- -->
+      <section id="view-prices" class="view" hidden>
+        <div class="grid2">
+          <div class="card"><h3>Current selling prices (per litre)</h3>
+            <div class="table-wrap"><table id="tbl-prices"></table></div></div>
+          <form id="price-form" class="card">
+            <h3>Set a new price</h3>
+            <label>Product
+              <select name="product_type"><option value="FRESH_MILK">Fresh milk</option><option value="YOGHURT">Yoghurt</option><option value="MAZIWA_MALA">Maziwa mala</option></select></label>
+            <label>New price per litre (KSh)
+              <input name="selling_price" type="number" step="0.01" min="0.01" inputmode="decimal" required></label>
+            <p class="hint">The new price applies to future sales only. Past sales keep the price they were sold at.</p>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save price</button>
+          </form>
+        </div>
+      </section>
+
+
+      <!-- ---------- Opening stock (owner) ---------- -->
+      <section id="view-opening" class="view" hidden>
+        <div class="grid2">
+          <form id="open-form" class="card">
+            <h3>Enter the stock you already have</h3>
+            <p class="hint">Do this <strong>once</strong>, before recording any activity at that place. Leave blank what you do not have.</p>
+            <label>Where is the stock? <select name="location"></select></label>
+            <label>Stock counted on (date and time) <input type="datetime-local" name="as_of" required></label>
+            <label>Fresh milk (litres) <input name="FRESH_MILK" type="number" step="0.001" min="0" inputmode="decimal"></label>
+            <div id="open-shop-fields">
+              <label>Yoghurt (litres) <input name="YOGHURT" type="number" step="0.001" min="0" inputmode="decimal"></label>
+              <label>Maziwa mala (litres) <input name="MAZIWA_MALA" type="number" step="0.001" min="0" inputmode="decimal"></label>
+            </div>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Save opening stock</button>
+          </form>
+          <div class="card"><h3>Opening stock already entered</h3><div class="table-wrap"><table id="tbl-opening"></table></div></div>
+        </div>
+      </section>
+
+      <!-- ---------- Users (owner) ---------- -->
+      <section id="view-users" class="view" hidden>
+        <div class="grid2">
+          <form id="user-form" class="card">
+            <h3>Add a person</h3>
+            <label>Full name <input name="full_name" required maxlength="150"></label>
+            <label>Username <input name="username" required maxlength="40" autocapitalize="none" autocomplete="off"></label>
+            <label>Role
+              <select name="role"><option value="MILKER">Milker</option><option value="SHOP_ATTENDANT">Shop attendant</option><option value="OWNER">Owner</option></select></label>
+            <label>Temporary password (at least 8 characters)
+              <input name="password" type="text" required minlength="8" autocomplete="off"></label>
+            <p class="hint">Tell the person this password. They will be asked to choose their own the first time they sign in.</p>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Add person</button>
+          </form>
+          <div class="card"><h3>Everyone with access</h3><div class="table-wrap"><table id="tbl-users"></table></div></div>
+        </div>
+      </section>
+
+      <!-- ---------- Activity log (owner) ---------- -->
+      <section id="view-activity" class="view" hidden>
+        <div class="card"><h3>Recent activity: who did what</h3>
+          <div class="table-wrap"><table id="tbl-activity"></table></div></div>
+      </section>
+
+      <!-- ---------- Account (everyone) ---------- -->
+      <section id="view-account" class="view" hidden>
+        <p id="pw-banner" class="msg warn" hidden>You are using a temporary password. Please choose your own password to continue.</p>
+        <div class="grid2">
+          <form id="pw-form" class="card">
+            <h3>Change my password</h3>
+            <label>Current password <input name="current_password" type="password" required autocomplete="current-password"></label>
+            <label>New password (at least 8 characters) <input name="new_password" type="password" required minlength="8" autocomplete="new-password"></label>
+            <label>Repeat the new password <input name="new_password2" type="password" required minlength="8" autocomplete="new-password"></label>
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary" type="submit">Change password</button>
+          </form>
+          <div class="card"><h3>My account</h3><div id="account-info" class="stock-list"></div></div>
+        </div>
+      </section>
+
+      <!-- ---------- Alerts ---------- -->
+      <section id="view-alerts" class="view" hidden>
+        <div class="card">
+          <div class="row-between"><h3>Alerts</h3><button class="btn small" id="read-all">Mark all as read</button></div>
+          <div id="alerts-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Libraries and our own scripts (order matters) -->
+  <script src="/static/vendor/chart.umd.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
