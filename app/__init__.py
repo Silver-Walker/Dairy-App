@@ -18,6 +18,10 @@ def create_app(config=Config):
         """The whole web interface is one HTML page; JavaScript does the rest."""
         return send_from_directory(app.static_folder, "index.html")
 
+    @app.get("/service-worker.js")
+    def service_worker():
+        return send_from_directory(app.static_folder, "service-worker.js")
+
     @app.after_request
     def security_headers(resp):
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -29,9 +33,12 @@ def create_app(config=Config):
         if request.path.startswith(("/api/", "/auth/")):
             resp.headers["Cache-Control"] = "no-store"   # never cache business data
         elif request.path == "/" or request.path in {
-            "/static/js/api.js", "/static/js/app.js", "/static/js/charts.js"
+            "/static/js/api.js", "/static/js/app.js", "/static/js/charts.js",
+            "/static/js/offline.js", "/service-worker.js"
         }:
             resp.headers["Cache-Control"] = "no-store"
+        if request.path == "/service-worker.js":
+            resp.headers["Service-Worker-Allowed"] = "/"
         return resp
 
     @app.get("/health")
@@ -56,6 +63,17 @@ def create_app(config=Config):
             if "payment_status" not in dispatch_columns:
                 with db.engine.begin() as connection:
                     connection.execute(text("ALTER TABLE dispatches ADD COLUMN payment_status VARCHAR(10)"))
+            if "amount_paid" not in dispatch_columns:
+                with db.engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE dispatches ADD COLUMN amount_paid NUMERIC(12, 2) NOT NULL DEFAULT 0"))
+                    connection.execute(text(
+                        "UPDATE dispatches SET amount_paid = COALESCE(("
+                        "SELECT line_total FROM dispatch_items WHERE dispatch_id = dispatches.id LIMIT 1"
+                        "), 0) WHERE payment_status = 'PAID'"))
+            expense_columns = {column["name"] for column in inspect(db.engine).get_columns("expenses")}
+            if "area" not in expense_columns:
+                with db.engine.begin() as connection:
+                    connection.execute(text("ALTER TABLE expenses ADD COLUMN area VARCHAR(10)"))
 
     from . import cli
     cli.register(app)

@@ -171,7 +171,7 @@ def record_dispatch(business_id, user_id, data, *, owner_direct=False):
     when = parse_dt(data.get("dispatched_at"), "dispatched_at")
     dest = str(data.get("destination_type", "")).upper()
 
-    shop_id = price = reason = dest_name = payment_status = None
+    shop_id = price = reason = dest_name = payment_status = amount_paid = None
     line_total = None
     product = _product(business_id)
     if dest == "SHOP":
@@ -199,12 +199,18 @@ def record_dispatch(business_id, user_id, data, *, owner_direct=False):
                         "The owner must set a fresh milk price under Prices before recording an external sale")
                 price = configured_price.selling_price
             line_total = (qty * price).quantize(Q2)
-        if owner_direct:
-            payment_status = str(data.get("payment_status", "")).upper()
-            if payment_status not in ("PAID", "UNPAID"):
-                raise ValidationError("payment_status must be PAID or UNPAID")
-        else:
-            payment_status = None
+            payment_status = str(data.get("payment_status") or
+                                 ("" if owner_direct else "UNPAID")).upper()
+            if payment_status not in ("PAID", "UNPAID", "PARTIAL"):
+                raise ValidationError("payment_status must be PAID, UNPAID or PARTIAL")
+            if payment_status == "PAID":
+                amount_paid = line_total
+            elif payment_status == "UNPAID":
+                amount_paid = Decimal("0.00")
+            else:
+                amount_paid = dec(data.get("amount_paid"), "amount_paid").quantize(Q2)
+                if amount_paid >= line_total:
+                    raise ValidationError("amount_paid must be less than the sale total for a partial payment")
         if dtype == "NON_SALE":
             reason = (data.get("non_sale_reason") or "").strip()
             if not reason:
@@ -222,6 +228,7 @@ def record_dispatch(business_id, user_id, data, *, owner_direct=False):
                      business_id=business_id, farm_id=farm.id, destination_type=dest,
                      destination_shop_id=shop_id, destination_name=dest_name, dispatched_at=when,
                      dispatch_type=dtype, price_per_litre=price, payment_status=payment_status,
+                     amount_paid=amount_paid or Decimal("0.00"),
                      non_sale_reason=reason,
                      recorded_by=user_id, entered_at=entered_at, synced_at=synced_at,
                      notes=data.get("notes"))
@@ -234,7 +241,9 @@ def record_dispatch(business_id, user_id, data, *, owner_direct=False):
                      occurred_at=when, user_id=user_id, farm_id=farm.id)
         _audit(business_id, user_id, "CREATE", "DISPATCH", d.id,
                {"reference": d.reference, "type": dtype, "litres": str(qty),
-                "revenue": str(line_total) if line_total is not None else None})
+                "revenue": str(line_total) if line_total is not None else None,
+                "payment_status": payment_status,
+                "amount_paid": str(amount_paid) if amount_paid is not None else None})
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -248,15 +257,27 @@ def update_direct_sale_payment(business_id, user_id, dispatch_id, data):
     if not dispatch:
         raise NotFoundError("Buyer sale not found")
     status = str(data.get("payment_status", "")).upper()
-    if status not in ("PAID", "UNPAID"):
-        raise ValidationError("payment_status must be PAID or UNPAID")
-    if dispatch.payment_status == status:
+    if status not in ("PAID", "UNPAID", "PARTIAL"):
+        raise ValidationError("payment_status must be PAID, UNPAID or PARTIAL")
+    total = dispatch.items[0].line_total or Decimal("0.00")
+    if status == "PAID":
+        amount_paid = total
+    elif status == "UNPAID":
+        amount_paid = Decimal("0.00")
+    else:
+        amount_paid = dec(data.get("amount_paid"), "amount_paid").quantize(Q2)
+        if amount_paid >= total:
+            raise ValidationError("amount_paid must be less than the sale total for a partial payment")
+    if dispatch.payment_status == status and dispatch.amount_paid == amount_paid:
         return dispatch
     old_status = dispatch.payment_status
+    old_amount_paid = dispatch.amount_paid
     try:
         dispatch.payment_status = status
+        dispatch.amount_paid = amount_paid
         _audit(business_id, user_id, "UPDATE", "DIRECT_FARM_SALE", dispatch.id,
-               {"payment_status": {"old": old_status, "new": status}})
+               {"payment_status": {"old": old_status, "new": status},
+                "amount_paid": {"old": str(old_amount_paid), "new": str(amount_paid)}})
         db.session.commit()
     except Exception:
         db.session.rollback()

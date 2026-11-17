@@ -6,7 +6,99 @@
   /* ------------------------------------------------------------------ 1) helpers */
   const $ = function (sel, root) { return (root || document).querySelector(sel); };
   const $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
-  const state = { me: null, loc: null, view: null, dashToken: 0, pollTimer: null };
+  const state = {
+    me: null, loc: null, view: null, dashToken: 0, pollTimer: null,
+    offlineOnly: false, connectionAvailable: navigator.onLine, syncRunning: false, syncPromise: null,
+    saleStock: null, offlineScope: null
+  };
+  const THEME_KEY = 'dairy-theme';
+  const PROFILE_COLORS = ['teal', 'blue', 'purple', 'red', 'orange', 'slate'];
+  const PROFILE_SIZES = [36, 40, 44, 48, 52, 56, 60, 64];
+
+  function applyTheme(theme) {
+    const dark = theme === 'dark';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    const toggle = $('#theme-toggle');
+    if (toggle) {
+      toggle.setAttribute('aria-pressed', dark ? 'true' : 'false');
+      toggle.setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
+    }
+    if (window.DairyCharts && typeof DairyCharts.refreshTheme === 'function') DairyCharts.refreshTheme();
+  }
+
+  function profilePreferenceKey(me) {
+    return 'dairy-profile:' + String(me.business_id) + ':' + String(me.username).toLowerCase();
+  }
+  function applyProfilePreferences(me) {
+    const avatar = $('#profile-avatar');
+    let preferences = {};
+    try {
+      const saved = JSON.parse(localStorage.getItem(profilePreferenceKey(me)) || '{}');
+      preferences = saved && typeof saved === 'object' ? saved : {};
+    } catch (e) {
+      console.error('Unable to load profile button preferences.', e);
+    }
+    const color = PROFILE_COLORS.indexOf(preferences.color) >= 0 ? preferences.color : 'teal';
+    const size = PROFILE_SIZES.indexOf(Number(preferences.size)) >= 0 ? Number(preferences.size) : 48;
+    avatar.dataset.avatarColor = color;
+    avatar.dataset.avatarSize = String(size);
+    $('#profile-initial').textContent = (String(me.user || '').trim().charAt(0) || '?').toLocaleUpperCase();
+    $('#who').textContent = me.user;
+    $('#profile-toggle').setAttribute('aria-label', 'Open profile menu for ' + me.user);
+    $$('.avatar-color').forEach(function (button) {
+      button.setAttribute('aria-pressed', button.dataset.color === color ? 'true' : 'false');
+    });
+    $('#profile-size').value = String(size);
+    $('#profile-size-value').textContent = size + ' px';
+  }
+  function saveProfilePreferences() {
+    const preferences = {
+      color: $('#profile-avatar').dataset.avatarColor,
+      size: Number($('#profile-avatar').dataset.avatarSize)
+    };
+    try {
+      localStorage.setItem(profilePreferenceKey(state.me), JSON.stringify(preferences));
+    } catch (e) {
+      console.error('Unable to save profile button preferences.', e);
+      toast('Profile button settings could not be saved on this device.', 'error');
+    }
+  }
+  function setProfileMenuOpen(open) {
+    $('#profile-panel').hidden = !open;
+    $('#profile-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  $('#profile-toggle').addEventListener('click', function () {
+    setProfileMenuOpen($('#profile-panel').hidden);
+  });
+  $('#profile-close').addEventListener('click', function () {
+    setProfileMenuOpen(false);
+    $('#profile-toggle').focus();
+  });
+  $('#profile-colors').addEventListener('click', function (ev) {
+    const button = ev.target.closest('button[data-color]');
+    if (!button || PROFILE_COLORS.indexOf(button.dataset.color) < 0) return;
+    $('#profile-avatar').dataset.avatarColor = button.dataset.color;
+    $$('.avatar-color').forEach(function (item) {
+      item.setAttribute('aria-pressed', item === button ? 'true' : 'false');
+    });
+    saveProfilePreferences();
+  });
+  $('#profile-size').addEventListener('input', function (ev) {
+    const size = Number(ev.target.value);
+    if (PROFILE_SIZES.indexOf(size) < 0) return;
+    $('#profile-avatar').dataset.avatarSize = String(size);
+    $('#profile-size-value').textContent = size + ' px';
+    saveProfilePreferences();
+  });
+  document.addEventListener('click', function (ev) {
+    if (!$('#profile-menu').contains(ev.target)) setProfileMenuOpen(false);
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape' && !$('#profile-panel').hidden) {
+      setProfileMenuOpen(false);
+      $('#profile-toggle').focus();
+    }
+  });
 
   // Escape text before putting it into HTML, so typed notes can never run as code.
   function esc(s) {
@@ -80,9 +172,45 @@
     const mine = state.me ? state.me.roles : [];
     return mine.indexOf('OWNER') !== -1 || wanted.some(function (r) { return mine.indexOf(r) !== -1; });
   }
+  function roleLabel(role) {
+    const text = String(role || '').replace(/_/g, ' ').toLowerCase();
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
   // Run a loader and show any error as a toast instead of breaking the page.
   async function safe(fn) {
-    try { return await fn(); } catch (e) { if (e.status !== 401) toast(e.message, 'error'); return null; }
+    try { return await fn(); }
+    catch (e) { if (e.status !== 401 && !e.network) toast(e.message, 'error'); return null; }
+  }
+  async function updateOfflineBanner() {
+    const banner = $('#offline-banner'), message = $('#offline-message'), button = $('#offline-sync');
+    if (state.offlineOnly && navigator.onLine) state.connectionAvailable = true;
+    let rows = [];
+    try { rows = await DairyOffline.list(); }
+    catch (e) { message.textContent = e.message; banner.hidden = false; button.hidden = true; return; }
+    const count = rows.length;
+    if (!state.connectionAvailable) {
+      message.textContent = count
+        ? 'Offline — ' + count + ' record(s) saved on this phone, will upload when internet returns.'
+        : 'Offline. Production, dispatch, milk receipt, processing, sales, losses, and daily closing can be saved on this phone.';
+    } else if (state.offlineOnly) {
+      message.textContent = 'Connection restored. Sign in again to sync records saved on this phone.';
+    } else if (count && state.syncRunning) {
+      message.textContent = 'Syncing ' + count + ' saved record(s)…';
+    } else if (count && !state.me) {
+      message.textContent = count + ' saved record(s) remain on this phone. Sign in with the same account to sync.';
+    } else if (count) {
+      const failed = rows.filter(function (row) { return row.lastError; })[0];
+      message.textContent = failed
+        ? count + ' saved record(s) need attention: ' + failed.lastError
+        : count + ' saved record(s) are waiting to sync.';
+    } else {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+    button.hidden = !navigator.onLine ||
+      !(state.offlineOnly || (state.me && count && !state.syncRunning));
+    button.textContent = state.offlineOnly ? 'Sign in online' : 'Sync now';
   }
 
   const TYPE_LABEL = { TRANSFER: 'Transfer to shop', SALE: 'External sale', NON_SALE: 'Not a sale' };
@@ -96,13 +224,35 @@
   /* ------------------------------------------------------------------ 2) login / logout */
   function showLogin() {
     state.me = null;
+    setProfileMenuOpen(false);
+    state.offlineOnly = false;
+    state.offlineScope = null;
+    API.setOfflineScope(null);
     clearInterval(state.pollTimer);
     if (window.DairyCharts) DairyCharts.destroyAll();
     // wipe every table/list so the next person to log in on this device never sees the previous user's data
     $$('#kpis, #alerts-list, #close-result, .stock-list, table').forEach(function (el) { el.innerHTML = ''; });
     $('#app-view').hidden = true;
     $('#login-view').hidden = false;
+    $('#offline-login-form').hidden = true;
     refreshLoginMode();
+  }
+  function showOfflineLogin() {
+    state.me = null;
+    setProfileMenuOpen(false);
+    state.offlineOnly = false;
+    state.connectionAvailable = false;
+    state.offlineScope = null;
+    API.setOfflineScope(null);
+    clearInterval(state.pollTimer);
+    if (window.DairyCharts) DairyCharts.destroyAll();
+    $$('#kpis, #alerts-list, #close-result, .stock-list, table').forEach(function (el) { el.innerHTML = ''; });
+    $('#app-view').hidden = true;
+    $('#login-view').hidden = false;
+    $('#login-form').hidden = true;
+    $('#setup-form').hidden = true;
+    $('#offline-login-form').hidden = false;
+    setMsg($('#offline-login-error'), '');
   }
   // On a brand-new installation there is no account yet: show the "create owner" form instead of the login form.
   async function refreshLoginMode() {
@@ -112,24 +262,61 @@
     $('#login-form').hidden = setup;
   }
 
-  async function startApp(me) {
+  async function startApp(me, offlineOptions) {
+    offlineOptions = offlineOptions || {};
     state.me = me;
+    setProfileMenuOpen(false);
+    state.offlineOnly = !!offlineOptions.offlineOnly;
+    state.offlineScope = String(me.business_id) + ':' + String(me.username).toLowerCase();
+    API.setOfflineScope(state.offlineScope);
+    applyProfilePreferences(me);
+    updateProductionGreeting();
+    $('#dashboard-user').textContent = me.user.split(' ')[0] || 'there';
     $('#owner-direct-sale').hidden = !hasRole('OWNER');
-    $('#who').textContent = me.user + ' (' + me.roles.map(function (r) { return r.replace('_', ' ').toLowerCase(); }).join(', ') + ')';
     $('#biz-name').textContent = me.business;
     if (me.must_change_password) {
       state.loc = { farms: [], shops: [] };            // nothing else is allowed until the password is changed
     } else {
-      state.loc = await API.get('/api/locations');
+      state.loc = state.offlineOnly ? offlineOptions.locations : await API.get('/api/locations');
       setupForms();
+      if (!state.offlineOnly) {
+        try {
+          await DairyOffline.saveProfile(me, state.loc);
+        } catch (e) {
+          console.error('Unable to prepare offline sign-in for this device.', e);
+          toast('Offline sign-in could not be prepared on this device: ' + e.message, 'error');
+        }
+      }
     }
+    await safe(loadAccount);
     buildNav();
     $('#login-view').hidden = true;        // show the app only once it is fully ready
     $('#app-view').hidden = false;
-    if (!me.must_change_password) refreshBadge();
+    if (!me.must_change_password && !state.offlineOnly) refreshBadge();
     clearInterval(state.pollTimer);
-    if (!me.must_change_password) state.pollTimer = setInterval(refreshBadge, 60000);
+    if (!me.must_change_password && !state.offlineOnly) {
+      state.pollTimer = setInterval(function () {
+        refreshBadge();
+        updateProductionGreeting();
+        updateAttendantPageHeading();
+      }, 60000);
+    } else if (state.offlineOnly) {
+      state.pollTimer = setInterval(async function () {
+        try {
+          await API.get('/auth/setup-status');
+          showLogin();
+        } catch (e) {
+          if (!e.network) console.error('Unable to check whether the app is online.', e);
+        }
+      }, 30000);
+    }
     routeFromHash(true);
+    if (me.must_change_password) {
+      setProfileMenuOpen(true);
+      $('#pw-form [name=current_password]').focus();
+    }
+    await updateOfflineBanner();
+    if (!state.offlineOnly) syncOfflineQueue();
   }
 
   async function syncSession() {
@@ -145,10 +332,77 @@
     return true;
   }
   window.addEventListener('focus', function () {
+    if (state.offlineOnly || !state.me) return;
     syncSession().catch(function (e) {
       if (e.status === 401) showLogin();
-      else toast(e.message, 'error');
+      else if (!e.network) toast(e.message, 'error');
     });
+  });
+
+  function syncOfflineQueue() {
+    if (state.syncRunning) return state.syncPromise;
+    if (state.offlineOnly || !state.me || !state.connectionAvailable) return Promise.resolve();
+    state.syncRunning = true;
+    state.syncPromise = (async function () {
+      try {
+        let rows = await DairyOffline.list();
+        await updateOfflineBanner();
+        for (const row of rows) {
+          try {
+            if (!DairyOffline.queueable(row.url) || !row.payload ||
+                row.payload.client_uuid !== row.id) {
+              await DairyOffline.markError(row.id, 'Invalid offline entry; it was retained and not sent.');
+              break;
+            }
+            await API.post(row.url, row.payload);
+            await DairyOffline.remove(row.id);
+          } catch (e) {
+            if (!e.network && e.status !== 401) await DairyOffline.markError(row.id, e.message);
+            break;
+          }
+        }
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally {
+        state.syncRunning = false;
+        await updateOfflineBanner();
+        if (state.me && state.connectionAvailable && !state.offlineOnly) {
+          const current = VIEWS.filter(function (v) { return v.id === state.view; })[0];
+          if (current) safe(current.load);
+        }
+      }
+    })();
+    return state.syncPromise;
+  }
+
+  window.addEventListener('offline', function () {
+    state.connectionAvailable = false;
+    updateOfflineBanner();
+  });
+  window.addEventListener('online', function () {
+    state.connectionAvailable = true;
+    if (state.offlineOnly) showLogin();
+    else syncOfflineQueue();
+    updateOfflineBanner();
+  });
+  window.addEventListener('dairy:network-error', function () {
+    state.connectionAvailable = false;
+    updateOfflineBanner();
+  });
+  window.addEventListener('dairy:network-restored', function () {
+    const wasOffline = !state.connectionAvailable;
+    state.connectionAvailable = true;
+    if (state.offlineOnly) {
+      showLogin();
+      return;
+    }
+    updateOfflineBanner();
+    if (wasOffline && !state.offlineOnly) syncOfflineQueue();
+  });
+  $('#offline-sync').addEventListener('click', function () {
+    state.connectionAvailable = navigator.onLine;
+    if (state.offlineOnly) showLogin();
+    else syncOfflineQueue();
   });
 
   $('#login-form').addEventListener('submit', async function (ev) {
@@ -165,11 +419,54 @@
     } finally { btn.disabled = false; }
   });
 
+  $('#offline-login-form').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    const form = ev.target, error = $('#offline-login-error'), button = $('button[type=submit]', form);
+    const username = form.elements.username.value.trim();
+    const pin = form.elements.pin.value;
+    setMsg(error, '');
+    button.disabled = true;
+    try {
+      const profile = await DairyOffline.verifyPin(username, pin);
+      const savedAt = profile ? Date.parse(profile.savedAt) : NaN;
+      if (!profile || !Number.isFinite(savedAt) || savedAt > Date.now() ||
+          Date.now() - savedAt > 30 * 24 * 60 * 60 * 1000) {
+        throw new Error('Username or offline PIN is incorrect, or offline access needs to be set up again while online.');
+      }
+      form.elements.pin.value = '';
+      state.connectionAvailable = false;
+      await startApp(profile.me, { offlineOnly: true, locations: profile.locations });
+    } catch (e) {
+      setMsg(error, e.message, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $('#online-login-link').addEventListener('click', showLogin);
+
   $('#logout').addEventListener('click', async function () {
+    let queued;
+    try { queued = await DairyOffline.list(); }
+    catch (e) { toast(e.message, 'error'); return; }
+    if (queued.length && !window.confirm(
+      queued.length + ' offline record(s) are still saved on this phone. They will remain here, but you must sign in with the same account to sync them. Log out?'
+    )) return;
     await safe(function () { return API.post('/auth/logout'); });
+    state.offlineScope = null;
+    state.offlineOnly = false;
+    API.setOfflineScope(null);
     location.hash = '';
     showLogin();
   });
+  $('#theme-toggle').addEventListener('click', function () {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* theme still works for this page */ }
+    applyTheme(next);
+  });
+  applyTheme((function () {
+    try { return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; }
+    catch (e) { return 'light'; }
+  })());
 
   /* ------------------------------------------------------------------ 3) navigation */
   const VIEWS = [
@@ -179,19 +476,19 @@
     { id: 'receipts',   label: 'Receive milk', roles: ['SHOP_ATTENDANT'],  load: loadReceipts },
     { id: 'processing', label: 'Processing',   roles: ['SHOP_ATTENDANT'],  load: loadProcessing },
     { id: 'sales',      label: 'Sales',        roles: ['SHOP_ATTENDANT'],  load: loadSales },
+    { id: 'expenses',   label: 'Expenses',     roles: [],                  load: loadExpenses },
     { id: 'losses',     label: 'Losses',       roles: ['SHOP_ATTENDANT'],  load: loadLosses },
     { id: 'closing',    label: 'Daily closing', roles: ['SHOP_ATTENDANT'], load: loadClosing },
     { id: 'prices',     label: 'Prices',       roles: [],                  load: loadPrices },
     { id: 'opening',    label: 'Opening stock', roles: [],                 load: loadOpening },
     { id: 'users',      label: 'Users',        roles: [],                  load: loadUsers },
     { id: 'activity',   label: 'Activity',     roles: [],                  load: loadActivity },
-    { id: 'alerts',     label: 'Alerts',       roles: ['MILKER', 'SHOP_ATTENDANT'], load: loadAlerts },
-    { id: 'account',    label: 'Account',      roles: ['MILKER', 'SHOP_ATTENDANT'], load: loadAccount }
+    { id: 'alerts',     label: 'Alerts',       roles: ['MILKER', 'SHOP_ATTENDANT'], load: loadAlerts }
   ];
   const OWNER_HIDDEN_VIEWS = ['production', 'dispatch', 'receipts', 'processing', 'closing', 'opening'];
   function allowedViews() {
     // roles: [] means owner only (hasRole always lets OWNER through)
-    if (state.me && state.me.must_change_password) return VIEWS.filter(function (v) { return v.id === 'account'; });
+    if (state.me && state.me.must_change_password) return VIEWS.filter(function (v) { return v.id === 'users'; });
     return VIEWS.filter(function (v) {
       return hasRole.apply(null, v.roles) &&
         (!hasRole('OWNER') || OWNER_HIDDEN_VIEWS.indexOf(v.id) === -1);
@@ -199,9 +496,31 @@
   }
   function buildNav() {
     const nav = $('#nav');
-    nav.innerHTML = allowedViews().map(function (v) {
+    nav.innerHTML = '<span class="nav-indicator" aria-hidden="true"></span>' + allowedViews()
+      .filter(function (v) { return v.id !== 'alerts'; }).map(function (v) {
       return '<button class="tab" data-view="' + v.id + '">' + esc(v.label) + '</button>';
     }).join('');
+    positionActiveTab(false);
+  }
+  function positionActiveTab(animate) {
+    const nav = $('#nav');
+    const active = $('.tab.active', nav);
+    const indicator = $('.nav-indicator', nav);
+    if (!indicator) return;
+    if (!active) {
+      indicator.hidden = true;
+      return;
+    }
+    indicator.hidden = false;
+    if (!animate) indicator.classList.add('no-transition');
+    indicator.style.width = active.offsetWidth + 'px';
+    indicator.style.height = active.offsetHeight + 'px';
+    indicator.style.transform = 'translate(' + active.offsetLeft + 'px, ' + active.offsetTop + 'px)';
+    if (!animate) {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { indicator.classList.remove('no-transition'); });
+      });
+    }
   }
   $('#nav').addEventListener('click', function (ev) {
     const b = ev.target.closest('.tab');
@@ -214,10 +533,13 @@
     if (!v) return;
     state.view = id;
     $$('.view').forEach(function (s) { s.hidden = s.id !== 'view-' + id; });
+    updateAttendantPageHeading(id);
     $$('.tab').forEach(function (t) { t.classList.toggle('active', t.dataset.view === id); });
+    positionActiveTab(true);
     if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
     safe(v.load);
   }
+  window.addEventListener('resize', function () { positionActiveTab(false); });
   function routeFromHash(first) {
     const wanted = location.hash.replace('#', '');
     const views = allowedViews();
@@ -230,8 +552,7 @@
   /* ------------------------------------------------------------------ 4) screens */
 
   /* ---- shared: stock boxes ---- */
-  async function loadStock(targetEl, kind, id) {
-    const data = await API.get('/api/stock?' + kind + '_id=' + encodeURIComponent(id));
+  function renderStock(targetEl, data, kind) {
     const items = kind === 'farm'
       ? data.items.filter(function (i) { return i.type === 'FRESH_MILK'; })
       : data.items;
@@ -239,6 +560,12 @@
       const way = Number(i.in_transit_litres) > 0 ? ' <span class="muted">(+' + fmtL(i.in_transit_litres) + ' L on the way)</span>' : '';
       return '<div class="stock-row"><span>' + esc(i.product) + way + '</span><strong>' + fmtL(i.balance_litres) + ' L</strong></div>';
     }).join('') || '<p class="muted">No stock recorded yet.</p>';
+  }
+
+  async function loadStock(targetEl, kind, id) {
+    const data = await API.get('/api/stock?' + kind + '_id=' + encodeURIComponent(id));
+    renderStock(targetEl, data, kind);
+    return data;
   }
 
   /* ---- generic form wiring (save, show errors, avoid double-saves) ---- */
@@ -249,36 +576,91 @@
       const btn = $('button[type=submit]', form), msg = $('.msg', form);
       if (btn.disabled) return;
       setMsg(msg, '');
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      async function queueLocally(payload) {
+        payload.entered_at = payload.entered_at || new Date().toISOString();
+        await DairyOffline.enqueue({
+          id: payload.client_uuid, url: opts.url, payload: payload,
+          createdAt: payload.entered_at, lastError: null
+        });
+        form.dataset.uuid = API.uuid();
+        opts.reset(form);
+        $$('details.optional-note', form).forEach(function (details) { details.open = false; });
+        toast('Saved on this phone, will upload when internet returns.');
+        await updateOfflineBanner();
+      }
       try {
-        if (!(await syncSession())) {
-          toast('Your signed-in account changed. Check the account shown and submit again.');
+        let saveOffline = !!opts.offlineQueue && (!state.connectionAvailable || state.offlineOnly);
+        if (!saveOffline) {
+          try {
+            if (!(await syncSession())) {
+              toast('Your signed-in account changed. Check the account shown and submit again.');
+              return;
+            }
+          } catch (e) {
+            if (opts.offlineQueue && e.network) {
+              state.connectionAvailable = false;
+              saveOffline = true;
+            } else {
+              if (e.status === 401) showLogin();
+              else setMsg(msg, e.message, 'error');
+              return;
+            }
+          }
+        }
+        if (opts.offlineQueue && !saveOffline) {
+          const waiting = await DairyOffline.list();
+          if (waiting.length) {
+            await syncOfflineQueue();
+            if ((await DairyOffline.list()).length) {
+              setMsg(msg, 'An earlier offline entry needs attention before new entries can be saved.', 'error');
+              return;
+            }
+          }
+        }
+        let payload;
+        try { payload = opts.build(form); } catch (e) { setMsg(msg, e.message, 'error'); return; }
+        if (opts.beforeSubmit) {
+          if ((await opts.beforeSubmit(payload, form, msg)) === false) return;
+        }
+        payload.client_uuid = form.dataset.uuid;      // same id on retry => never saved twice
+        if (saveOffline) {
+          await queueLocally(payload);
           return;
         }
-      } catch (e) {
-        if (e.status === 401) showLogin();
-        else setMsg(msg, e.message, 'error');
-        return;
-      }
-      let payload;
-      try { payload = opts.build(form); } catch (e) { setMsg(msg, e.message, 'error'); return; }
-      payload.client_uuid = form.dataset.uuid;      // same id on retry => never saved twice
-      const label = btn.textContent;
-      btn.disabled = true; btn.textContent = 'Saving…';
-      try {
-        const res = await API.post(opts.url, payload);
+        let res;
+        try {
+          res = await API.post(opts.url, payload);
+        } catch (e) {
+          if (opts.offlineQueue && e.network) {
+            state.connectionAvailable = false;
+            await queueLocally(payload);
+            return;
+          }
+          throw e;
+        }
         toast(res.created === false ? 'This was already saved earlier (no duplicate created).' : 'Saved ✓');
         form.dataset.uuid = API.uuid();
         opts.reset(form);
+        $$('details.optional-note', form).forEach(function (details) { details.open = false; });
         await opts.after(res);
         if (res.warnings && res.warnings.length) setMsg(msg, res.warnings.join(' '), 'warn');
       } catch (e) {
         setMsg(msg, e.message, 'error');
-      } finally { btn.disabled = form.dataset.locked === '1'; btn.textContent = label; }
+      } finally {
+        btn.disabled = form.dataset.locked === '1';
+        btn.textContent = label;
+      }
     });
   }
 
   /* ---- set up all forms once, after we know the farms and shops ---- */
   let formsReady = false;
+  let productionDateRecords = [];
+  let productionRecentRecords = [];
+  let productionLoadToken = 0;
   function setupForms() {
     const farms = state.loc.farms, shops = state.loc.shops;
     [$('#prod-form [name=farm_id]'), $('#disp-form [name=farm_id]')].forEach(function (s) { fillSelect(s, farms, 'id', 'name'); });
@@ -297,10 +679,38 @@
     fillShopSelects(); resetProc(); resetSale(); resetLoss(); resetClose();
     if (formsReady) return;
     formsReady = true;
+    $$('.optional-note').forEach(function (details) {
+      details.addEventListener('toggle', function () {
+        $('summary', details).textContent = details.open ? '− Hide note' : '+ Add note';
+      });
+    });
     setupShopForms();
 
+    updateProductionGreeting();
+    $('#prod-form [name=farm_id]').addEventListener('change', function () { safe(loadProduction); });
+    $('#prod-form [name=production_date]').addEventListener('change', function () { safe(loadProduction); });
+    $('.production-session-buttons').addEventListener('click', function (ev) {
+      const button = ev.target.closest('[data-production-session]');
+      if (!button) return;
+      $('#prod-form [name=session]').value = button.dataset.productionSession;
+      updateProductionSessionButtons();
+      updateProductionSummary(productionDateRecords, $('#prod-form [name=production_date]').value);
+      updateProductionExistingRecord(productionDateRecords, $('#prod-form [name=production_date]').value);
+      updateProductionUsual($('#prod-form [name=session]').value,
+        $('#prod-form [name=production_date]').value,
+        $('#prod-form [name=farm_id]').value, productionRecentRecords);
+    });
+    $('.production-quantity').addEventListener('click', function (ev) {
+      const button = ev.target.closest('[data-production-step]');
+      if (!button) return;
+      const input = $('#prod-quantity');
+      const current = parseFloat(input.value) || 0;
+      input.value = String(Math.max(0, Math.round((current + Number(button.dataset.productionStep)) * 1000) / 1000));
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
     bindForm($('#prod-form'), {
-      url: '/api/production', reset: resetProd, after: loadProduction,
+      url: '/api/production', reset: resetProd, after: loadProduction, offlineQueue: true,
       build: function (f) {
         return { farm_id: Number(f.elements.farm_id.value), production_date: f.elements.production_date.value, session: f.elements.session.value,
                  quantity_litres: f.elements.quantity_litres.value, notes: f.elements.notes.value.trim() || null };
@@ -308,27 +718,35 @@
     });
 
     bindForm($('#disp-form'), {
-      url: '/api/dispatches', reset: resetDisp, after: loadDispatch,
+      url: '/api/dispatches', reset: resetDisp, after: loadDispatch, offlineQueue: true,
       build: function (f) {
-        const external = f.elements.destination_type.value === 'EXTERNAL';
-        const p = { farm_id: Number(f.elements.farm_id.value), destination_type: f.elements.destination_type.value,
+        const destination = f.elements.destination_type.value;
+        const p = { farm_id: Number(f.elements.farm_id.value), destination_type: destination === 'HOME' ? 'EXTERNAL' : destination,
                     quantity_litres: f.elements.quantity_litres.value, dispatched_at: toIso(f.elements.dispatched_at.value),
                     notes: f.elements.notes.value.trim() || null };
-        if (!external) { p.destination_shop_id = Number(f.elements.destination_shop_id.value); return p; }
+        if (destination === 'SHOP') { p.destination_shop_id = Number(f.elements.destination_shop_id.value); return p; }
+        if (destination === 'HOME') {
+          p.destination_name = 'Home use';
+          p.dispatch_type = 'NON_SALE';
+          p.non_sale_reason = 'Household consumption';
+          return p;
+        }
         p.destination_name = f.elements.destination_name.value.trim();
+        p.price_per_litre = f.elements.price_per_litre.value;
+        p.payment_status = f.elements.payment_status.value;
+        if (p.payment_status === 'PARTIAL') p.amount_paid = f.elements.amount_paid.value;
         if (f.elements.is_sale.value === 'yes') {
           p.dispatch_type = 'SALE';
         } else {
           p.dispatch_type = 'NON_SALE';
-          const detail = f.elements.reason_detail.value.trim();
-          p.non_sale_reason = f.elements.reason_kind.value + (detail ? ': ' + detail : '');
+          p.non_sale_reason = 'Customer dispatch';
         }
         return p;
       }
     });
 
     bindForm($('#rec-form'), {
-      url: '/api/receipts', reset: resetRec, after: loadReceipts,
+      url: '/api/receipts', reset: resetRec, after: loadReceipts, offlineQueue: true,
       build: function (f) {
         if (!f.elements.dispatch_id.value) throw new Error('Please choose which dispatch you are receiving.');
         const p = { shop_id: Number(f.elements.shop_id.value), quantity_litres: f.elements.quantity_litres.value,
@@ -339,8 +757,22 @@
     });
 
     // dispatch form: show/hide the parts that depend on earlier answers
-    $$('#disp-form [name=destination_type], #disp-form [name=is_sale]').forEach(function (r) {
+    $$('#disp-form [name=destination_type], #disp-form [name=is_sale], #disp-form [name=payment_status]').forEach(function (r) {
       r.addEventListener('change', syncDispatchUI);
+    });
+    $('#disp-form [name=quantity_litres]').addEventListener('input', updateDispatchPaymentSummary);
+    $('#disp-form [name=price_per_litre]').addEventListener('input', updateDispatchPaymentSummary);
+    $('#disp-form [name=amount_paid]').addEventListener('input', updateDispatchPaymentSummary);
+    $$('#disp-form [data-qty]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        const input = $('#disp-form [name=quantity_litres]');
+        const next = Math.max(0, (Number(input.value) || 0) + Number(button.dataset.qty));
+        input.value = String(next);
+        updateDispatchPaymentSummary();
+      });
+    });
+    $('#dispatch-now').addEventListener('click', function () {
+      $('#disp-form [name=dispatched_at]').value = nowLocalValue();
     });
     // receipt form: show the difference between dispatched and received as you type
     $('#rec-dispatch').addEventListener('change', onReceiptDispatchChange);
@@ -349,12 +781,19 @@
 
   function resetProd() {
     const f = $('#prod-form');
-    f.elements.quantity_litres.value = ''; f.elements.notes.value = ''; f.elements.production_date.value = todayStr();
+    f.elements.quantity_litres.value = '0'; f.elements.notes.value = ''; f.elements.production_date.value = todayStr();
+    f.elements.session.value = suggestedProductionSession();
+    updateProductionSessionButtons();
   }
   function resetDisp() {
     const f = $('#disp-form');
-    f.elements.quantity_litres.value = ''; f.elements.notes.value = ''; f.elements.destination_name.value = '';
-    f.elements.reason_detail.value = ''; f.elements.dispatched_at.value = nowLocalValue();
+    f.elements.quantity_litres.value = '0';
+    f.elements.notes.value = '';
+    if (f.elements.destination_name) f.elements.destination_name.value = '';
+    f.elements.payment_status.value = 'PAID';
+    f.elements.amount_paid.value = '';
+    if (f.elements.price_per_litre) f.elements.price_per_litre.value = '60';
+    f.elements.dispatched_at.value = nowLocalValue();
     syncDispatchUI();
   }
   function resetRec() {
@@ -381,20 +820,208 @@
 
   function syncDispatchUI() {
     const f = $('#disp-form');
-    const external = f.elements.destination_type.value === 'EXTERNAL';
-    $('#disp-shop-box').hidden = external;
-    $('#disp-ext-box').hidden = !external;
-    $('#disp-sale-box').hidden = f.elements.is_sale.value !== 'yes';
-    $('#disp-nonsale-box').hidden = f.elements.is_sale.value === 'yes';
+    const destination = f.elements.destination_type.value;
+    $('#disp-shop-box').hidden = destination !== 'SHOP';
+    $('#disp-ext-box').hidden = destination !== 'EXTERNAL';
+    const saleBox = $('#disp-sale-box');
+    const nonsaleBox = $('#disp-nonsale-box');
+    if (saleBox) saleBox.hidden = f.elements.is_sale.value !== 'yes';
+    if (nonsaleBox) nonsaleBox.hidden = f.elements.is_sale.value === 'yes';
+    const partial = f.elements.payment_status.value === 'PARTIAL';
+    $('#dispatch-partial-payment').hidden = !partial;
+    f.elements.amount_paid.required = partial;
+    updateDispatchPaymentSummary();
+  }
+
+  function updateDispatchPaymentSummary() {
+    const f = $('#disp-form');
+    const status = f.elements.payment_status.value;
+    const total = Math.round((Number(f.elements.quantity_litres.value) || 0) *
+      (Number(f.elements.price_per_litre.value) || 0) * 100) / 100;
+    const paid = status === 'PAID' ? total :
+      status === 'PARTIAL' ? (Number(f.elements.amount_paid.value) || 0) : 0;
+    const balance = Math.max(0, Math.round((total - paid) * 100) / 100);
+    f.elements.amount_paid.max = (status === 'PARTIAL' ? total - 0.01 : total).toFixed(2);
+    $('#dispatch-payment-balance').textContent = fmtMoney(balance);
+    $('#dispatch-payment-balance-row').classList.toggle('paid', balance === 0);
   }
 
   /* ---- Production ---- */
+  const ATTENDANT_VIEWS = ['receipts', 'processing', 'sales', 'expenses', 'losses', 'closing', 'alerts'];
+  const ATTENDANT_PAGE_COPY = {
+    receipts: ['Receive milk', 'Record deliveries and review milk received at the shop.'],
+    processing: ['Processing', 'Record milk used to make yoghurt or maziwa mala.'],
+    sales: ['Sales', 'Record daily sales and review recent transactions.'],
+    expenses: ['Expenses', 'Track farm and shop spending across selected periods.'],
+    losses: ['Losses', 'Record spoiled stock and review recent losses.'],
+    closing: ['Daily closing', 'Count shop stock and compare it with expected balances.'],
+    alerts: ['Alerts', 'Review important updates for your shop.']
+  };
+  function updateAttendantPageHeading(viewId) {
+    const heading = $('#attendant-page-heading');
+    if (!heading) return;
+    const currentView = viewId || state.view;
+    const show = hasRole('SHOP_ATTENDANT') && ATTENDANT_VIEWS.indexOf(currentView) !== -1 &&
+      currentView !== 'expenses';
+    heading.hidden = !show;
+    if (!show) return;
+    const copy = ATTENDANT_PAGE_COPY[currentView];
+    if (!copy) return;
+    $('#attendant-greeting').textContent = copy[0];
+    $('#attendant-date').textContent = copy[1];
+  }
+
+  function updateProductionGreeting() {
+    const heading = $('#production-greeting');
+    const dateLabel = $('#production-today-date');
+    if (!heading || !dateLabel) return;
+    const now = new Date();
+    const hour = now.getHours();
+    const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+    const name = state.me && String(state.me.user || '').trim().split(/\s+/)[0];
+    heading.textContent = greeting + ', ' + (name || 'there');
+    dateLabel.textContent = now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+  }
+
+  function suggestedProductionSession() {
+    const hour = new Date().getHours();
+    return hour < 11 ? 'MORNING' : hour < 16 ? 'LUNCH' : 'EVENING';
+  }
+
+  function updateProductionSessionButtons() {
+    const selected = $('#prod-form [name=session]').value;
+    $$('.production-session').forEach(function (button) {
+      const active = button.dataset.productionSession === selected;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function updateProductionSummary(records, selectedDate) {
+    const isToday = selectedDate === todayStr();
+    $('#production-today-title').textContent = isToday ? 'Today' : 'Production on ' + fmtDate(selectedDate);
+    const sessions = ['MORNING', 'LUNCH', 'EVENING'];
+    let total = 0;
+    sessions.forEach(function (session) {
+      const record = records.filter(function (row) { return row.session === session; })[0];
+      const card = $('.production-session-stat[data-session-stat="' + session + '"]');
+      const amount = $('strong', card);
+      const status = $('small', card);
+      if (record) {
+        const litres = Number(record.quantity_litres);
+        total += litres;
+        amount.textContent = fmtL(litres) + ' L';
+        status.textContent = 'Recorded';
+        status.className = 'recorded';
+      } else {
+        amount.textContent = '—';
+        status.className = '';
+        const upcoming = isToday && new Date().getHours() < { MORNING: 11, LUNCH: 16, EVENING: 24 }[session];
+        status.textContent = upcoming ? 'Later' : 'Not recorded';
+      }
+    });
+    $('#production-today-total').textContent = fmtL(total) + ' L recorded so far';
+  }
+
+  function updateProductionExistingRecord(records, selectedDate) {
+    const session = $('#prod-form [name=session]').value;
+    const existing = records.filter(function (row) {
+      return row.session === session && row.date === selectedDate;
+    })[0];
+    const notice = $('#production-existing');
+    notice.hidden = !existing;
+    notice.textContent = existing
+      ? session.charAt(0) + session.slice(1).toLowerCase() + ' is already recorded: ' +
+        fmtL(existing.quantity_litres) + ' L by ' + existing.recorded_by +
+        '. Duplicate entries are blocked; contact the owner to request a correction.'
+      : '';
+  }
+
+  function updateProductionUsual(session, selectedDate, farmId, recent) {
+    const previous = recent.filter(function (row) {
+      return productionFarmMatches(row, farmId) && row.session === session && row.date < selectedDate;
+    });
+    const usual = $('#production-usual');
+    if (!previous.length) {
+      usual.textContent = 'No earlier ' + session.toLowerCase() + ' records to estimate a usual amount.';
+      return;
+    }
+    const average = previous.reduce(function (sum, row) {
+      return sum + Number(row.quantity_litres);
+    }, 0) / previous.length;
+    usual.textContent = 'Recent ' + session.charAt(0) + session.slice(1).toLowerCase() +
+      ' average: about ' + fmtL(average) + ' L (' + previous.length + ' records).';
+  }
+
+  function productionDispatchLabel(iso) {
+    if (!iso) return 'No dispatches yet';
+    const date = new Date(iso);
+    const dateText = todayStr(date) === todayStr() ? 'Today' :
+      todayStr(date) === todayStr(new Date(Date.now() - 86400000)) ? 'Yesterday' :
+        date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+    return dateText + ', ' + date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function productionFarmMatches(row, farmId) {
+    return Number(row.farm_id) === Number(farmId) ||
+      (row.farm_id === undefined && state.loc.farms.length === 1 &&
+       Number(state.loc.farms[0].id) === Number(farmId));
+  }
+
+  async function loadProductionDispatches(farmId) {
+    if (!farmId) return { items: [] };
+    try {
+      return await API.get('/api/dispatches?limit=200');
+    } catch (e) {
+      if (!e.network) throw e;
+      try {
+        return await API.get('/api/dispatches');
+      } catch (cachedError) {
+        if (!cachedError.network) throw cachedError;
+        return null;
+      }
+    }
+  }
+
   async function loadProduction() {
     const farmId = $('#prod-form [name=farm_id]').value;
-    const [list] = await Promise.all([
+    const selectedDate = $('#prod-form [name=production_date]').value || todayStr();
+    const token = ++productionLoadToken;
+    updateProductionGreeting();
+    const [list, stock, dispatches] = await Promise.all([
       API.get('/api/production'),
-      farmId ? loadStock($('#farm-stock'), 'farm', farmId) : null
+      farmId ? API.get('/api/stock?farm_id=' + encodeURIComponent(farmId)) : null,
+      loadProductionDispatches(farmId)
     ]);
+    if (token !== productionLoadToken) return;
+    if (stock) renderStock($('#farm-stock'), stock, 'farm');
+    else $('#farm-stock').innerHTML = '<p class="muted">No farm selected.</p>';
+    productionRecentRecords = list.items;
+    let dateItems = list.items.filter(function (row) {
+      return row.date === selectedDate && productionFarmMatches(row, farmId);
+    });
+    if (farmId && !state.offlineOnly) {
+      try {
+        const daily = await API.get('/api/production?date=' + encodeURIComponent(selectedDate) +
+          '&farm_id=' + encodeURIComponent(farmId) + '&limit=200');
+        dateItems = daily.items;
+      } catch (e) {
+        if (!e.network) throw e;
+      }
+    }
+    if (token !== productionLoadToken) return;
+    productionDateRecords = dateItems;
+    updateProductionSummary(dateItems, selectedDate);
+    updateProductionSessionButtons();
+    updateProductionExistingRecord(dateItems, selectedDate);
+    updateProductionUsual($('#prod-form [name=session]').value, selectedDate, farmId, list.items);
+    const latestDispatch = dispatches && dispatches.items.filter(function (dispatch) {
+      return productionFarmMatches(dispatch, farmId);
+    })[0];
+    $('#production-last-dispatch').textContent = dispatches
+      ? productionDispatchLabel(latestDispatch && latestDispatch.dispatched_at)
+      : 'Unavailable offline';
+    if (!stock && farmId) throw new Error('Farm stock could not be loaded.');
     renderTable($('#tbl-prod'), [
       { h: 'Date', f: function (r) { return esc(fmtDate(r.date)); } },
       { h: 'Session', f: function (r) { return esc(r.session.charAt(0) + r.session.slice(1).toLowerCase()); } },
@@ -407,21 +1034,63 @@
   /* ---- Dispatch ---- */
   async function loadDispatch() {
     const farmId = $('#disp-form [name=farm_id]').value;
-    const [list] = await Promise.all([
+    const [list, stock, price] = await Promise.all([
       API.get('/api/dispatches'),
-      farmId ? loadStock($('#disp-farm-stock'), 'farm', farmId) : null
+      farmId ? loadStock($('#disp-farm-stock'), 'farm', farmId) : null,
+      API.get('/api/dispatches/price')
     ]);
+    if (price.selling_price !== null) $('#disp-form [name=price_per_litre]').value = price.selling_price;
+    updateDispatchPaymentSummary();
     renderTable($('#tbl-disp'), dispatchColumns(), list.items, 'No dispatches recorded yet.');
+    updateDispatchSummary(list.items, stock, farmId);
+  }
+  function updateDispatchSummary(items, stock, farmId) {
+    let available = 0;
+    if (stock && stock.items) {
+      stock.items.forEach(function (item) {
+        if (item.type === 'FRESH_MILK' && (!farmId || item.farm_id == null || Number(item.farm_id) === Number(farmId))) {
+          available += Number(item.balance_litres) || 0;
+        }
+      });
+    }
+    $('#dispatch-farm-total').textContent = fmtL(available) + ' L';
+    $('#dispatch-farm-available').textContent = fmtL(available) + ' L';
+
+    const today = todayStr();
+    let shop = 0, sold = 0, home = 0;
+    items.forEach(function (item) {
+      if (!item.dispatched_at || todayStr(new Date(item.dispatched_at)) !== today) return;
+      const litres = Number(item.quantity_litres) || 0;
+      if (item.type === 'SALE') sold += litres;
+      else if (item.type === 'NON_SALE') home += litres;
+      else shop += litres;
+    });
+    $('#dispatch-shop-today').textContent = fmtL(shop) + ' L';
+    $('#dispatch-sold-today').textContent = fmtL(sold) + ' L';
+    $('#dispatch-home-today').textContent = fmtL(home) + ' L';
   }
   function dispatchColumns() {
     return [
       { h: 'Reference', f: function (r) { return esc(r.reference); } },
       { h: 'When', f: function (r) { return esc(fmtDT(r.dispatched_at)); } },
-      { h: 'Destination', f: function (r) { return esc(r.destination || ''); } },
+      { h: 'Destination', f: function (r) {
+        const shop = state.loc.shops.find(function (item) { return String(item.id) === String(r.destination); });
+        return esc(shop ? shop.name : (r.destination || ''));
+      } },
       { h: 'Type', f: function (r) { return esc(TYPE_LABEL[r.type] || r.type); } },
       { h: 'Litres', num: true, f: function (r) { return fmtL(r.quantity_litres); } },
-      { h: 'Revenue', num: true, f: function (r) { return r.revenue === null ? '—' : esc(fmtMoney(r.revenue)); } },
-      { h: 'Status', f: function (r) { return r.status ? statusTag(r.status) : (r.non_sale_reason ? esc(r.non_sale_reason) : '—'); } }
+      { h: 'Amount', num: true, f: function (r) { return r.revenue === null ? '—' : esc(fmtMoney(r.revenue)); } },
+      { h: 'Status', f: function (r) {
+        if (r.type === 'SALE' && r.payment_status) {
+          const label = r.payment_status === 'PARTIAL' ? 'Partly paid' :
+            r.payment_status === 'PAID' ? 'Paid' : 'Unpaid';
+          const balance = Number(r.remaining_balance) || 0;
+          return balance > 0
+            ? '<span class="tag warn">' + label + ' · ' + esc(fmtMoney(balance)) + ' due</span>'
+            : '<span class="tag">' + label + '</span>';
+        }
+        return r.status ? statusTag(r.status) : (r.non_sale_reason ? esc(r.non_sale_reason) : '—');
+      } }
     ];
   }
 
@@ -441,12 +1110,12 @@
         return '<option value="' + d.id + '">' + esc(d.reference + ' · ' + fmtL(d.quantity_litres) + ' L · ' + fmtDT(d.dispatched_at)) + '</option>';
       }).join('') + '<option value="none">Milk that is not from a recorded dispatch</option>';
     renderTable($('#tbl-rec'), [
+      { h: 'Recorded by', f: function (r) { return esc(r.recorded_by); } },
       { h: 'Received', f: function (r) { return esc(fmtDT(r.received_at)); } },
       { h: 'Dispatch', f: function (r) { return esc(r.reference || '—'); } },
       { h: 'Dispatched (L)', num: true, f: function (r) { return fmtL(r.dispatched_litres); } },
       { h: 'Received (L)', num: true, f: function (r) { return fmtL(r.quantity_litres); } },
-      { h: 'Difference (L)', num: true, f: function (r) { return fmtSigned(r.difference); } },
-      { h: 'Recorded by', f: function (r) { return esc(r.recorded_by); } }
+      { h: 'Difference (L)', num: true, f: function (r) { return fmtSigned(r.difference); } }
     ], list.items, 'No milk received yet.');
   }
   function selectedPending() {
@@ -470,6 +1139,13 @@
   /* ================================================================ shop screens */
   const PRODUCTS = [['FRESH_MILK', 'Fresh milk'], ['YOGHURT', 'Yoghurt'], ['MAZIWA_MALA', 'Maziwa mala']];
   let listPrices = {};                                   // product_type -> list price (string)
+  let expensePeriod = 'month';
+  let expenseArea = 'TOTALS';
+  let expenseDateRange = null;
+  let expenseTrendGrain = 'day';
+  let expensePrintState = null;
+  let expenseLoadToken = 0;
+  let expenseReportReady = false;
 
   function shopId() { return $('#proc-form [name=shop_id]').value; }
   function fillShopSelects() {
@@ -539,7 +1215,7 @@
 
   function setupShopForms() {
     bindForm($('#proc-form'), {
-      url: '/api/processing', reset: resetProc, after: loadProcessing,
+      url: '/api/processing', reset: resetProc, after: loadProcessing, offlineQueue: true,
       build: function (f) {
         const e = f.elements;
         return { shop_id: Number(e.shop_id.value), product_type: e.product_type.value, input_litres: e.input_litres.value,
@@ -547,7 +1223,8 @@
       }
     });
     bindForm($('#sale-form'), {
-      url: '/api/sales', reset: resetSale, after: loadSales,
+      url: '/api/sales', reset: resetSale, after: loadSales, offlineQueue: true,
+      beforeSubmit: confirmSaleWithinStock,
       build: function (f) {
         const items = $$('#sale-lines .sale-line').map(function (row) {
           const it = { product_type: $('.sl-product', row).value, quantity_litres: $('.sl-qty', row).value };
@@ -582,7 +1259,7 @@
       }
     });
     bindForm($('#loss-form'), {
-      url: '/api/losses', reset: resetLoss, after: loadLosses,
+      url: '/api/losses', reset: resetLoss, after: loadLosses, offlineQueue: true,
       build: function (f) {
         const e = f.elements;
         return { shop_id: Number(e.shop_id.value), product_type: e.product_type.value, quantity_litres: e.quantity_litres.value,
@@ -590,7 +1267,7 @@
       }
     });
     bindForm($('#close-form'), {
-      url: '/api/closings', reset: resetClose,
+      url: '/api/closings', reset: resetClose, offlineQueue: true,
       after: async function (res) { renderCloseResult(res.record); await loadClosing(); },
       build: function (f) {
         const e = f.elements;
@@ -602,6 +1279,51 @@
       url: '/api/prices', reset: function (f) { f.elements.selling_price.value = ''; }, after: loadPrices,
       build: function (f) { return { product_type: f.elements.product_type.value, selling_price: f.elements.selling_price.value }; }
     });
+    bindForm($('#expense-form'), {
+      url: '/api/expenses',
+      reset: function (f) { f.elements.area.value = ''; f.elements.expense_date.value = todayStr(); f.elements.amount.value = ''; f.elements.description.value = ''; f.elements.payment_status.value = 'UNPAID'; },
+      after: loadExpenses,
+      build: function (f) {
+        return { area: f.elements.area.value,
+                 expense_date: f.elements.expense_date.value,
+                 category_id: Number(f.elements.category_id.value),
+                 amount: f.elements.amount.value,
+                 payment_status: f.elements.payment_status.value,
+                 description: f.elements.description.value.trim() || null };
+      }
+    });
+    $('#expense-form [name=category_id]').addEventListener('change', syncExpenseDescription);
+    $('#bills-to-pay-list').addEventListener('click', function (ev) {
+      const button = ev.target.closest('[data-pay-expense]');
+      if (!button) return;
+      button.disabled = true;
+      safe(async function () {
+        await API.post('/api/expenses/' + button.dataset.payExpense + '/pay');
+        toast('Expense marked paid.');
+        await loadExpenses();
+      }).finally(function () { button.disabled = false; });
+    });
+    $('#expense-date-filter').addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      const form = ev.currentTarget;
+      const from = form.elements.date_from.value;
+      const to = form.elements.date_to.value;
+      if (!from || !to) {
+        toast('Choose both a start date and an end date.', 'error');
+        return;
+      }
+      if (from > to) {
+        toast('The start date must be on or before the end date.', 'error');
+        return;
+      }
+      expenseDateRange = { from: from, to: to };
+      $$('#expense-periods [data-expense-period]').forEach(function (button) {
+        button.classList.remove('active');
+      });
+      safe(loadExpenses);
+    });
+    $('#expense-export').addEventListener('click', exportExpenseReport);
+    window.addEventListener('afterprint', restoreAfterExpensePrint);
 
     $('#sale-add').addEventListener('click', addSaleLine);
     $('#sale-lines').addEventListener('click', function (ev) {
@@ -618,6 +1340,32 @@
     $('#tbl-direct-sales').addEventListener('click', onDirectSalePaymentClick);
     $('#tbl-closings').addEventListener('click', onReviewClick);
     $('#tbl-review').addEventListener('click', onReviewClick);
+    $('#tbl-sales').addEventListener('click', onSaleReceiptClick);
+    $('#expense-periods').addEventListener('click', function (ev) {
+      const b = ev.target.closest('[data-expense-period]');
+      if (!b) return;
+      expensePeriod = b.dataset.expensePeriod;
+      expenseDateRange = null;
+      $$('#expense-periods [data-expense-period]').forEach(function (button) {
+        button.classList.toggle('active', button === b);
+      });
+      safe(loadExpenses);
+    });
+    $('#expense-trend-grain').addEventListener('change', function (ev) {
+      expenseTrendGrain = ev.target.value;
+      safe(loadExpenses);
+    });
+    $('#expense-areas').addEventListener('click', function (ev) {
+      const b = ev.target.closest('[data-expense-area]');
+      if (!b) return;
+      expenseArea = b.dataset.expenseArea;
+      $$('#expense-areas [data-expense-area]').forEach(function (button) {
+        button.classList.toggle('active', button === b);
+      });
+      safe(loadExpenses);
+    });
+    $('#sale-receipt-print').addEventListener('click', function () { window.print(); });
+    $('#sale-receipt-close').addEventListener('click', function () { $('#sale-receipt-dialog').close(); });
   }
 
   /* ---- Processing ---- */
@@ -635,25 +1383,29 @@
 
   /* ---- Sales ---- */
   async function loadSales() {
-    const [pr, list, , buyerSales, farmUse] = await Promise.all([
+    const [pr, list, stock, buyerSales, farmUse] = await Promise.all([
       API.get('/api/prices'), API.get('/api/sales'), loadStock($('#sale-stock'), 'shop', shopId()),
       hasRole('OWNER') ? API.get('/api/direct-sales') : Promise.resolve({ items: [] }),
       hasRole('OWNER') ? API.get('/api/farm-withdrawals') : Promise.resolve({ items: [] })
     ]);
+    setSaleStock(stock);
     listPrices = {};
     pr.items.forEach(function (p) { listPrices[p.product_type] = p.selling_price; });
     const directPrice = $('#direct-sale-form [name=price_per_litre]');
     if (hasRole('OWNER') && !directPrice.value && listPrices.FRESH_MILK) {
       directPrice.value = listPrices.FRESH_MILK;
     }
+
     updateDirectSaleTotal();
     $$('#sale-lines .sale-line').forEach(refreshSaleLine);
     renderTable($('#tbl-sales'), [
       { h: 'Date', f: function (r) { return esc(fmtDate(r.sale_date)); } },
+      { h: 'Shop', f: function (r) { return esc(r.shop || ''); } },
       { h: 'Items', f: function (r) {
           return r.items.map(function (i) { return esc(i.product + ' ' + fmtL(i.quantity_litres) + ' L @ ' + Number(i.unit_price).toFixed(2)); }).join('<br>'); } },
       { h: 'Total', num: true, f: function (r) { return esc(fmtMoney(r.total)); } },
-      { h: 'Recorded by', f: function (r) { return esc(r.recorded_by); } }
+      { h: 'Recorded by', f: function (r) { return esc(r.recorded_by); } },
+      { h: 'Receipt', f: function (r) { return '<button class="btn small" type="button" data-sale-receipt="' + r.id + '">View / Print</button>'; } }
     ], list.items, 'No sales recorded yet.');
     renderTable($('#tbl-direct-sales'), [
       { h: 'Reference', f: function (r) { return esc(r.reference); } },
@@ -674,6 +1426,258 @@
       { h: 'Litres', num: true, f: function (r) { return fmtL(r.quantity_litres); } },
       { h: 'Notes', f: function (r) { return esc(r.notes || ''); } }
     ], farmUse.items, 'No personal-use withdrawals yet.');
+  }
+
+  function setSaleStock(data) {
+    const stock = {};
+    data.items.forEach(function (item) {
+      stock[item.type] = Number(item.balance_litres);
+    });
+    state.saleStock = stock;
+  }
+
+  async function confirmSaleWithinStock(payload, form, msg) {
+    try {
+      const stockData = await loadStock($('#sale-stock'), 'shop', payload.shop_id);
+      setSaleStock(stockData);
+    } catch (e) {
+      if (!e.network) throw e;
+      state.connectionAvailable = false;
+      if (!state.saleStock) {
+        const warning = 'Current stock could not be checked while offline. The sale will be checked when it syncs. Continue?';
+        setMsg(msg, warning, 'warn');
+        return window.confirm(warning);
+      }
+    }
+    const requested = {};
+    payload.items.forEach(function (item) {
+      requested[item.product_type] = (requested[item.product_type] || 0) + Number(item.quantity_litres);
+    });
+    const shortages = PRODUCTS.filter(function (product) {
+      return requested[product[0]] > (state.saleStock[product[0]] || 0);
+    }).map(function (product) {
+      const available = state.saleStock[product[0]] || 0;
+      const quantity = requested[product[0]];
+      return product[1] + ': selling ' + fmtL(quantity) + ' L, stock shown ' +
+        fmtL(available) + ' L (short by ' + fmtL(quantity - available) + ' L)';
+    });
+    const offlineWarning = state.connectionAvailable ? '' : 'You are offline; the stock snapshot may be out of date. ';
+    if (!shortages.length && !offlineWarning) return true;
+
+    const warning = offlineWarning + (shortages.length
+      ? 'Warning: the sale exceeds current shop stock. ' + shortages.join('; ') +
+        '. Check your quantities and stock. You can continue only if this is intentional.'
+      : 'Check the saved stock snapshot before continuing.');
+    setMsg(msg, warning, 'warn');
+    if (!window.confirm(warning + '\n\nContinue and save this sale anyway?')) return false;
+    setMsg(msg, '');
+    return true;
+  }
+
+  async function onSaleReceiptClick(ev) {
+    const button = ev.target.closest('[data-sale-receipt]');
+    if (!button) return;
+    button.disabled = true;
+    try {
+      const result = await API.get('/api/sales/' + encodeURIComponent(button.dataset.saleReceipt));
+      const sale = result.record;
+      $('#sale-receipt-content').innerHTML =
+        '<h1 id="sale-receipt-title">' + esc(state.me.business || 'Dairy Farm Manager') + '</h1>' +
+        '<p class="receipt-subtitle">Sales receipt</p>' +
+        '<dl class="receipt-meta">' +
+          '<div><dt>Receipt no.</dt><dd>SALE-' + String(sale.id).padStart(6, '0') + '</dd></div>' +
+          '<div><dt>Date</dt><dd>' + esc(fmtDate(sale.sale_date)) + '</dd></div>' +
+          '<div><dt>Shop</dt><dd>' + esc(sale.shop) + '</dd></div>' +
+          '<div><dt>Recorded by</dt><dd>' + esc(sale.recorded_by || '—') + '</dd></div>' +
+        '</dl>' +
+        '<div class="table-wrap"><table><thead><tr><th>Product</th><th class="num">Quantity</th><th class="num">Price</th><th class="num">Amount</th></tr></thead>' +
+        '<tbody>' + sale.items.map(function (item) {
+          return '<tr><td>' + esc(item.product) + '</td><td class="num">' + esc(fmtL(item.quantity_litres)) + ' L</td>' +
+            '<td class="num">' + esc(fmtMoney(item.unit_price)) + '</td><td class="num">' + esc(fmtMoney(item.line_total)) + '</td></tr>';
+        }).join('') + '</tbody><tfoot><tr><th colspan="3">Total</th><th class="num">' + esc(fmtMoney(sale.total)) + '</th></tr></tfoot></table></div>';
+      $('#sale-receipt-dialog').showModal();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function loadExpenses() {
+    const token = ++expenseLoadToken;
+    expenseReportReady = false;
+    const billsRequest = API.get('/api/expenses/unpaid').then(function (bills) {
+      return { bills: bills };
+    }).catch(function (error) {
+      if (error.status !== 404) throw error;
+      return { unavailable: true };
+    });
+    const [categories, billsResult] = await Promise.all([
+      API.get('/api/expense-categories'), billsRequest
+    ]);
+    if (billsResult.bills) renderBillsToPay(billsResult.bills);
+    else {
+      $('#bills-to-pay-total').textContent = '';
+      $('#bills-to-pay-list').innerHTML =
+        '<p class="msg warn" role="status">Bills to pay is unavailable because the server has not loaded this feature yet. Restart the app server to enable it.</p>';
+    }
+    const select = $('#expense-form [name=category_id]');
+    const selected = select.value;
+    const categoryChanged = categories.items.length !== select.options.length - 1 ||
+      categories.items.some(function (category, i) {
+        const option = select.options[i + 1];
+        return !option || option.value !== String(category.id);
+      });
+    if (categoryChanged) {
+      select.innerHTML = '<option value="">Choose category</option>';
+      categories.items.forEach(function (category) {
+        const option = document.createElement('option');
+        option.value = category.id;
+        option.textContent = category.name;
+        select.appendChild(option);
+      });
+    }
+    if (categories.items.some(function (category) { return String(category.id) === selected; })) {
+      select.value = selected;
+    }
+    syncExpenseDescription();
+    const dateParams = expenseDateRange
+      ? '&date_from=' + encodeURIComponent(expenseDateRange.from) +
+        '&date_to=' + encodeURIComponent(expenseDateRange.to)
+      : '&period=' + encodeURIComponent(expensePeriod);
+    const result = await API.get('/api/expenses?area=' + encodeURIComponent(expenseArea) + dateParams);
+    if (token !== expenseLoadToken) return;
+    const labels = { week: 'Past week', month: 'Past month', '3months': 'Past 3 months', '6months': 'Past 6 months', year: 'Past year', custom: 'Custom dates' };
+    $('#expense-range').textContent = labels[result.period] + ' · ' + fmtDate(result.start_date) + ' – ' + fmtDate(result.end_date);
+    $('#expense-total').textContent = fmtMoney(result.total);
+    const trendAvailable = Array.isArray(result.daily) && result.previous_period &&
+      result.revenue !== undefined && result.previous_period.revenue !== undefined &&
+      result.previous_period.expenses !== undefined;
+    const trendStatus = $('#expense-trend-status');
+    trendStatus.hidden = trendAvailable;
+    trendStatus.textContent = trendAvailable ? '' :
+      'Trend and period comparison need a refreshed online report. Expense list and category totals are from the last saved report.';
+    const previous = result.previous_period;
+    const comparisons = {
+      week: 'previous 7 days', month: 'previous 30 days', '3months': 'previous 90 days',
+      '6months': 'previous 180 days', year: 'previous 365 days', custom: 'previous period'
+    };
+    const comparisonLabel = comparisons[result.period] || 'previous period';
+    const compare = function (current, prior) {
+      current = Number(current);
+      prior = Number(prior);
+      if (prior === 0) return current === 0 ? 'No change vs ' + comparisonLabel : 'New vs ' + comparisonLabel;
+      const percent = Math.round(((current - prior) / prior) * 100);
+      return (percent > 0 ? '+' : '') + percent + '% vs ' + comparisonLabel;
+    };
+    const revenue = trendAvailable ? Number(result.revenue) : null;
+    const expenses = Number(result.total);
+    $('#expense-revenue-total').textContent = revenue === null ? 'Unavailable offline' : fmtMoney(revenue);
+    $('#expense-revenue-comparison').textContent = trendAvailable
+      ? compare(revenue, previous.revenue) : 'Unavailable offline';
+    $('#expense-revenue-comparison').title = trendAvailable
+      ? fmtDate(previous.start_date) + ' – ' + fmtDate(previous.end_date) : '';
+    $('#expense-comparison').textContent = trendAvailable
+      ? compare(expenses, previous.expenses) : 'Unavailable offline';
+    $('#expense-comparison').title = trendAvailable
+      ? fmtDate(previous.start_date) + ' – ' + fmtDate(previous.end_date) : '';
+    $('#expense-net-total').textContent = revenue === null ? 'Unavailable offline' : fmtMoney(revenue - expenses);
+    $('#expense-net-total').classList.toggle('negative', revenue !== null && revenue < expenses);
+    if (window.DairyCharts) DairyCharts.renderExpenseTrend(
+      trendAvailable ? result.daily : [], expenseTrendGrain, result.area || expenseArea
+    );
+    $('#expense-area-totals').innerHTML = expenseArea === 'TOTALS'
+      ? Object.keys(result.totals_by_area).filter(function (area) { return area !== 'UNASSIGNED'; }).map(function (area) {
+          return '<div class="expense-category-total"><span>' + (area === 'FARM' ? 'On farm' : 'On shop') +
+            '</span><strong>' + esc(fmtMoney(result.totals_by_area[area])) + '</strong></div>';
+        }).join('')
+      : '';
+    if (window.DairyCharts) DairyCharts.renderExpenses(result.by_category, result.total);
+    renderTable($('#tbl-expenses'), [
+      { h: 'Area', f: function (r) { return esc(r.area === 'FARM' ? 'On farm' : r.area === 'SHOP' ? 'On shop' : 'Unassigned'); } },
+      { h: 'Date', f: function (r) { return esc(fmtDate(r.expense_date)); } },
+      { h: 'Category', f: function (r) { return esc(r.category); } },
+      { h: 'Description', f: function (r) { return esc(r.description || ''); } },
+      { h: 'Amount', num: true, f: function (r) { return esc(fmtMoney(r.amount)); } },
+      { h: 'Paid', num: true, f: function (r) { return esc(fmtMoney(r.amount_paid)); } },
+      { h: 'Payment status', f: function (r) {
+          const status = r.payment_status;
+          const label = status.replace('_', ' ');
+          const cls = status === 'PAID' ? 'tag payment-paid' :
+            status === 'UNPAID' ? 'tag bad payment-unpaid' : 'tag warn payment-partial';
+          return '<span class="' + cls + '">' + esc(label) + '</span>';
+        } },
+      { h: 'Recorded by', f: function (r) { return esc(r.recorded_by); } }
+    ], result.items, 'No expenses recorded in this period.');
+    expenseReportReady = true;
+  }
+
+  function exportExpenseReport() {
+    if (!state.me || !hasRole('OWNER') || state.view !== 'expenses') {
+      toast('Open the Expenses page as the owner before exporting a report.', 'error');
+      return;
+    }
+    if (!expenseReportReady) {
+      toast('Wait for the current expense report to finish loading before exporting.', 'error');
+      return;
+    }
+    const areaLabels = { FARM: 'On farm', SHOP: 'On shop', TOTALS: 'All areas' };
+    const grainLabels = { day: 'Daily', week: 'Weekly', month: 'Monthly' };
+    const now = new Date();
+    $('#expense-report-business').textContent = state.me.business || 'Dairy Farm Manager';
+    $('#expense-report-period').textContent = $('#expense-range').textContent || 'Current selected period';
+    $('#expense-report-area').textContent = areaLabels[expenseArea] || 'All areas';
+    $('#expense-report-grouping').textContent = grainLabels[expenseTrendGrain] || 'Daily';
+    $('#expense-report-prepared-by').textContent = state.me.user || state.me.username || 'Owner';
+    $('#expense-report-generated').textContent = now.toLocaleString([], {
+      day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+
+    expensePrintState = {
+      title: document.title,
+      theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
+    };
+    document.title = (state.me.business || 'Dairy Farm Manager') + ' - Expense Report';
+    document.body.classList.add('expense-report-print');
+    if (expensePrintState.theme === 'dark') applyTheme('light');
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { window.print(); });
+    });
+  }
+
+  function restoreAfterExpensePrint() {
+    if (!expensePrintState) return;
+    document.body.classList.remove('expense-report-print');
+    document.title = expensePrintState.title;
+    if (expensePrintState.theme === 'dark') applyTheme('dark');
+    expensePrintState = null;
+  }
+
+  function renderBillsToPay(bills) {
+    $('#bills-to-pay-total').textContent = bills.items.length ? fmtMoney(bills.total_due) + ' due' : '';
+    $('#bills-to-pay-list').innerHTML = bills.items.length
+      ? bills.items.map(function (bill) {
+          const age = Number(bill.days_old);
+          const ageLabel = age === 0 ? 'Today' : age + ' ' + (age === 1 ? 'day' : 'days') + ' old';
+          const area = bill.area === 'FARM' ? 'Farm' : bill.area === 'SHOP' ? 'Shop' : 'Unassigned';
+          return '<div class="bill-row"><div class="bill-description"><strong>' + esc(bill.category) +
+            '</strong><span>' + esc(bill.description || area) + '</span><small class="' +
+            (age >= 10 ? 'bill-age overdue' : 'bill-age') + '">' + esc(ageLabel) + '</small></div>' +
+            '<div class="bill-payment"><strong>' + esc(fmtMoney(bill.amount_due)) + '</strong>' +
+            '<button type="button" class="btn small bill-pay-button" data-pay-expense="' + esc(bill.id) +
+            '">Mark paid</button></div></div>';
+        }).join('')
+      : '<p class="muted bills-empty">No unpaid expenses.</p>';
+  }
+
+  function syncExpenseDescription() {
+    const f = $('#expense-form');
+    const equipment = f.elements.category_id.selectedOptions[0] &&
+      f.elements.category_id.selectedOptions[0].textContent === 'Equipment';
+    f.elements.description.required = Boolean(equipment);
+    $('#expense-description-title').textContent = equipment
+      ? 'Specific equipment purchased / maintained (required)'
+      : 'Description / notes (optional)';
   }
   async function onDirectSalePaymentClick(ev) {
     const b = ev.target.closest('button[data-payment]');
@@ -755,15 +1759,20 @@
     const f = $('#close-form'), btn = $('button[type=submit]', f), banner = $('#closing-banner');
     const [st, list] = await Promise.all([API.get('/api/closings/status?shop_id=' + shopId()), API.get('/api/closings')]);
     const date = f.elements.closing_date;
-    date.max = st.today;
-    f.dataset.locked = st.up_to_date ? '1' : '';
-    btn.disabled = st.up_to_date;
+    date.max = state.offlineOnly ? todayStr() : st.today;
+    f.dataset.locked = st.up_to_date && !state.offlineOnly ? '1' : '';
+    btn.disabled = st.up_to_date && !state.offlineOnly;
     if (st.first_closing) {
       date.readOnly = false; date.value = date.value || st.suggested_date;
       setMsg(banner, 'This is the first stock closing for this shop. Choose the day you are closing; later closings must follow in order.', 'ok');
     } else if (st.up_to_date) {
-      date.readOnly = true; date.value = '';
-      setMsg(banner, 'All days are closed up to ' + fmtDate(st.last_closed) + '. The next closing opens when today ends.', 'ok');
+      if (state.offlineOnly) {
+        date.readOnly = false; date.value = todayStr();
+        setMsg(banner, 'Offline: the saved closing status may be out of date. Confirm the closing date before saving; the server will validate it when synced.', 'warn');
+      } else {
+        date.readOnly = true; date.value = '';
+        setMsg(banner, 'All days are closed up to ' + fmtDate(st.last_closed) + '. The next closing opens when today ends.', 'ok');
+      }
     } else {
       date.readOnly = true; date.value = st.next_date;
       if (st.overdue.length) {
@@ -820,6 +1829,52 @@
       }
     });
 
+    $('#offline-pin-form').addEventListener('submit', async function (ev) {
+      ev.preventDefault();
+      const form = ev.target, error = $('.msg', form), button = $('button[type=submit]', form);
+      setMsg(error, '');
+      if (state.offlineOnly || !navigator.onLine || !state.me) {
+        setMsg(error, 'Sign in online to set or change this device’s offline PIN.', 'error');
+        return;
+      }
+      if (form.elements.pin.value.length < 8) {
+        setMsg(error, 'Use at least 8 characters for the offline PIN.', 'error');
+        return;
+      }
+      if (form.elements.pin.value !== form.elements.pin_confirm.value) {
+        setMsg(error, 'The offline PINs do not match.', 'error');
+        return;
+      }
+      button.disabled = true;
+      try {
+        if (!(await syncSession())) throw new Error('Your account changed. Please check the signed-in user and try again.');
+        await DairyOffline.setPin(state.offlineScope, form.elements.pin.value);
+        form.reset();
+        $('#offline-pin-status').textContent = 'An offline PIN is set for this browser. You can use it after opening the site offline.';
+        toast('Offline PIN saved on this device.');
+      } catch (e) {
+        setMsg(error, e.message, 'error');
+      } finally { button.disabled = false; }
+    });
+
+    $('#offline-pin-remove').addEventListener('click', async function () {
+      if (state.offlineOnly || !navigator.onLine || !state.me) {
+        toast('Sign in online to remove this device’s offline PIN.', 'error');
+        return;
+      }
+      if (!window.confirm('Remove offline sign-in from this browser? Already queued records will remain on this device.')) return;
+      const button = $('#offline-pin-remove');
+      button.disabled = true;
+      try {
+        if (!(await syncSession())) throw new Error('Your account changed. Please check the signed-in user and try again.');
+        await DairyOffline.removePin(state.offlineScope);
+        $('#offline-pin-status').textContent = 'No offline PIN is set for this browser.';
+        toast('Offline PIN removed from this device.');
+      } catch (e) {
+        toast(e.message, 'error');
+      } finally { button.disabled = false; }
+    });
+
     bindForm($('#user-form'), {
       url: '/api/users', reset: function (f) { f.reset(); }, after: loadUsers,
       build: function (f) {
@@ -849,27 +1904,44 @@
   async function loadAccount() {
     const me = state.me;
     $('#pw-banner').hidden = !me.must_change_password;
+    $('#pw-form').hidden = state.offlineOnly;
+    const pinForm = $('#offline-pin-form');
+    pinForm.hidden = state.offlineOnly || me.must_change_password;
+    if (!pinForm.hidden) {
+      const pinSet = await DairyOffline.hasPin(state.offlineScope);
+      $('#offline-pin-status').textContent = pinSet
+        ? 'An offline PIN is set for this browser.'
+        : 'No offline PIN is set for this browser yet.';
+    }
     $('#account-info').innerHTML = [['Name', me.user], ['Username', me.username || ''], ['Business', me.business],
-      ['Role', me.roles.map(function (r) { return r.replace('_', ' ').toLowerCase(); }).join(', ')]].map(function (r) {
+      ['Role', me.roles.map(roleLabel).join(', ')]].map(function (r) {
       return '<div class="stock-row"><span>' + esc(r[0]) + '</span><strong>' + esc(r[1]) + '</strong></div>';
     }).join('');
   }
 
   async function loadUsers() {
+    const owner = hasRole('OWNER') && !state.me.must_change_password;
+    $('#user-form').hidden = !owner;
+    $('#users-list-card').hidden = !owner;
+    $('#user-password-required').hidden = !state.me.must_change_password;
+    if (!owner) return;
     const data = await API.get('/api/users');
     renderTable($('#tbl-users'), [
       { h: 'Name', f: function (u) { return esc(u.full_name); } },
       { h: 'Username', f: function (u) { return esc(u.username); } },
-      { h: 'Role', f: function (u) { return esc(u.roles.map(function (r) { return r.replace('_', ' ').toLowerCase(); }).join(', ')); } },
+      { h: 'Role', f: function (u) { return esc(u.roles.map(roleLabel).join(', ')); } },
       { h: 'Status', f: function (u) {
-          return (u.active ? '<span class="tag">Active</span>' : '<span class="tag bad">Deactivated</span>') +
-                 (u.locked ? ' <span class="tag bad">Locked</span>' : '') +
-                 (u.must_change_password ? ' <span class="tag warn">Temporary password</span>' : ''); } },
+          return '<div class="user-status">' +
+                 (u.active ? '<span class="tag">Active</span>' : '<span class="tag bad">Deactivated</span>') +
+                 (u.locked ? '<span class="tag bad">Locked</span>' : '') +
+                 (u.must_change_password ? '<span class="tag warn">Temporary password</span>' : '') +
+                 '</div>'; } },
       { h: 'Last sign-in', f: function (u) { return esc(u.last_login_at ? fmtDT(u.last_login_at) : 'Never'); } },
       { h: 'Actions', f: function (u) {
           const own = state.me && u.username === state.me.username;
           const attrs = ' data-id="' + u.id + '" data-name="' + esc(u.full_name) + '"';
-          return (own ? '' : '<button class="btn tiny" data-act="toggle" data-active="' + (u.active ? '1' : '0') + '"' + attrs + '>' + (u.active ? 'Deactivate' : 'Reactivate') + '</button>') +
+          return (own ? '' : '<button class="btn tiny" data-act="toggle" data-active="' + (u.active ? '1' : '0') + '"' + attrs + '>' + (u.active ? 'Deactivate' : 'Reactivate') + '</button>' +
+                 '<button class="btn tiny" data-act="role" data-role="' + esc(u.roles[0] || '') + '"' + attrs + '>Change role</button>') +
                  '<button class="btn tiny" data-act="reset"' + attrs + '>Reset password</button>' +
                  (u.locked ? '<button class="btn tiny primary" data-act="unlock"' + attrs + '>Unlock</button>' : ''); } }
     ], data.items, 'No users.');
@@ -879,7 +1951,15 @@
     if (!b) return;
     const id = b.dataset.id, name = b.dataset.name;
     try {
-      if (b.dataset.act === 'toggle') {
+      if (b.dataset.act === 'role') {
+        const dialog = $('#user-role-dialog');
+        dialog.dataset.userId = id;
+        $('#user-role-name').textContent = 'Change the role for ' + name + '.';
+        $('#user-role-form').elements.role.value = b.dataset.role;
+        setMsg($('.msg', $('#user-role-form')), '');
+        dialog.showModal();
+        return;
+      } else if (b.dataset.act === 'toggle') {
         const makeActive = b.dataset.active === '0';
         if (!makeActive && !window.confirm('Deactivate ' + name + '? They will be signed out and unable to sign in.')) return;
         await API.post('/api/users/' + id + '/active', { active: makeActive });
@@ -896,6 +1976,25 @@
       await loadUsers();
     } catch (e) { toast(e.message, 'error'); }
   }
+  $('#user-role-form').addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    const form = ev.currentTarget, dialog = $('#user-role-dialog');
+    const error = $('.msg', form), button = $('button[type=submit]', form);
+    setMsg(error, '');
+    button.disabled = true;
+    try {
+      await API.post('/api/users/' + encodeURIComponent(dialog.dataset.userId) + '/role',
+        { role: form.elements.role.value });
+      dialog.close();
+      toast('Role updated.');
+      await loadUsers();
+    } catch (e) {
+      setMsg(error, e.message, 'error');
+    } finally { button.disabled = false; }
+  });
+  $('#user-role-cancel').addEventListener('click', function () {
+    $('#user-role-dialog').close();
+  });
 
   async function loadOpening() {
     const f = $('#open-form'), sel = f.elements.location, keep = sel.value;
@@ -970,6 +2069,35 @@
     $('#d-from').value = todayStr(from);
     $('#d-to').value = todayStr(to);
   }
+  function shiftDate(value, days) {
+    const parts = value.split('-').map(Number);
+    const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  }
+  function sparkline(values) {
+    if (!values.length) return '';
+    const numbers = values.map(Number);
+    const min = Math.min.apply(null, numbers), max = Math.max.apply(null, numbers);
+    const spread = max - min || 1;
+    const points = numbers.map(function (value, index) {
+      const x = numbers.length === 1 ? 60 : index * 120 / (numbers.length - 1);
+      const y = 35 - (value - min) / spread * 28;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    return '<svg class="kpi-sparkline" viewBox="0 0 120 40" aria-hidden="true"><polyline points="' + points + '"></polyline></svg>';
+  }
+  function salesChange(current, previous) {
+    const now = Number(current), before = Number(previous);
+    if (before === 0) {
+      return { direction: now > 0 ? 'up' : 'flat', text: now > 0 ? 'New' : '0%' };
+    }
+    const percent = (now - before) / Math.abs(before) * 100;
+    return {
+      direction: percent > 0 ? 'up' : percent < 0 ? 'down' : 'flat',
+      text: (percent > 0 ? '↑ ' : percent < 0 ? '↓ ' : '') + Math.round(Math.abs(percent)) + '%'
+    };
+  }
   $$('.chip').forEach(function (c) {
     c.addEventListener('click', function () { setRange(Number(c.dataset.days)); loadDashboard(); });
   });
@@ -982,27 +2110,60 @@
     const token = ++state.dashToken;                 // ignore slow, out-of-date responses
     const data = await API.get('/api/dashboard/summary?from=' + from + '&to=' + to);
     if (token !== state.dashToken) return;
+    const periodDays = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+    const previousTo = shiftDate(from, -1);
+    const previousFrom = shiftDate(previousTo, 1 - periodDays);
+    const previous = await API.get('/api/dashboard/summary?from=' + previousFrom + '&to=' + previousTo);
+    if (token !== state.dashToken) return;
 
     const t = data.totals;
+    $('#flow-produced').textContent = fmtL(t.produced) + ' L';
+    $('#flow-sent').textContent = fmtL(t.sent_to_shop) + ' L';
+    $('#flow-transit').textContent = fmtL(t.in_transit_litres) + ' L';
+    $('#flow-received').textContent = fmtL(t.received_at_shop) + ' L';
+    $('#flow-lost').textContent = fmtL(t.losses_litres) + ' L';
+    $('#milk-flow-empty').hidden = Number(t.produced) > 0;
+
+    const shopDaily = data.days.map(function (_, index) {
+      return Object.keys(data.shop_sales).reduce(function (sum, product) {
+        return sum + Number(data.shop_sales[product][index] || 0);
+      }, 0);
+    });
+    const totalDaily = data.external_sales_revenue.map(function (amount, index) {
+      return Number(amount) + shopDaily[index];
+    });
+    const attention = [
+      { id: 'attention-overdue', value: t.closings_overdue },
+      { id: 'attention-review', value: t.closings_to_review },
+      { id: 'attention-discrepancies', value: t.discrepancies },
+      { id: 'attention-receipts', value: t.awaiting_receipt }
+    ];
+    attention.forEach(function (item) {
+      $('#' + item.id).textContent = String(item.value);
+    });
+    const hasAttention = attention.some(function (item) { return Number(item.value) > 0; });
+    $('#attention-status').textContent = hasAttention ? 'Needs review' : '✓ All clear';
+    $('#attention-status').classList.toggle('has-issues', hasAttention);
+
     const kpis = [
-      { l: 'Milk produced', v: fmtL(t.produced) + ' L' },
-      { l: 'Sent to shop', v: fmtL(t.sent_to_shop) + ' L' },
-      { l: 'Received at shop', v: fmtL(t.received_at_shop) + ' L' },
-      { l: 'External sales', v: fmtMoney(t.external_sales_revenue) },
-      { l: 'Total sales', v: fmtMoney(t.total_sales) },
-      { l: 'On the way to shop', v: fmtL(t.in_transit_litres) + ' L' },
-      { l: 'Awaiting receipt', v: String(t.awaiting_receipt), bad: t.awaiting_receipt > 0 },
-      { l: 'Discrepancies', v: String(t.discrepancies), bad: t.discrepancies > 0 },
-      { l: 'Shop sales', v: fmtMoney(t.shop_sales_revenue) },
-      { l: 'Stock lost', v: fmtL(t.losses_litres) + ' L' },
-      { l: 'Closings overdue', v: String(t.closings_overdue), bad: t.closings_overdue > 0 },
-      { l: 'Closings to review', v: String(t.closings_to_review), bad: t.closings_to_review > 0 }
+      { l: 'Total sales', v: fmtMoney(t.total_sales),
+        change: salesChange(t.total_sales, previous.totals.total_sales), trend: totalDaily },
+      { l: 'External sales', v: fmtMoney(t.external_sales_revenue),
+        change: salesChange(t.external_sales_revenue, previous.totals.external_sales_revenue),
+        trend: data.external_sales_revenue },
+      { l: 'Shop sales', v: fmtMoney(t.shop_sales_revenue),
+        change: salesChange(t.shop_sales_revenue, previous.totals.shop_sales_revenue), trend: shopDaily },
     ];
     $('#kpis').innerHTML = kpis.map(function (k) {
-      return '<div class="kpi' + (k.bad ? ' bad' : '') + '"><div class="k-label">' + esc(k.l) + '</div><div class="k-value">' + esc(k.v) + '</div></div>';
+      const detail = k.change
+        ? '<div class="kpi-detail"><span class="kpi-change ' + k.change.direction + '">' + esc(k.change.text) +
+          ' <span>vs previous period</span></span>' + sparkline(k.trend) + '</div>'
+        : '';
+      return '<div class="kpi' + (k.bad ? ' bad' : '') + '"><div class="k-label">' + esc(k.l) +
+        '</div><div class="k-value">' + esc(k.v) + '</div>' + detail + '</div>';
     }).join('');
 
-    DairyCharts.render(data);                          // charts.js draws the 4 charts
+    DairyCharts.render(data);
 
     renderTable($('#tbl-issues'), [
       { h: 'Reference', f: function (r) { return esc(r.reference); } },
@@ -1027,13 +2188,34 @@
   }
 
   /* ------------------------------------------------------------------ 5) start-up */
-  API.setUnauthorizedHandler(function () { if (state.me) { toast('Your session ended. Please sign in again.', 'error'); showLogin(); } });
+  API.setUnauthorizedHandler(function () {
+    if (state.me && (!state.offlineOnly || navigator.onLine)) {
+      if (!state.offlineOnly) toast('Your session ended. Please sign in again.', 'error');
+      showLogin();
+    }
+  });
   API.setPasswordChangeHandler(function () {            // the server says: change your temporary password first
-    if (state.me && !state.me.must_change_password) { state.me.must_change_password = true; buildNav(); showView('account'); }
+    if (state.me && !state.me.must_change_password) {
+      state.me.must_change_password = true;
+      buildNav();
+      showView('users');
+      safe(loadAccount);
+      setProfileMenuOpen(true);
+      $('#pw-form [name=current_password]').focus();
+    }
   });
   bindAccountForms();
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/service-worker.js').catch(function (e) {
+      console.error('Unable to register offline app support.', e);
+    });
+  }
   (async function init() {
-    try { await startApp(await API.get('/auth/me')); }
-    catch (e) { showLogin(); }
+    try {
+      await startApp(await API.get('/auth/me'));
+    } catch (e) {
+      if (e.network || !navigator.onLine) showOfflineLogin();
+      else showLogin();
+    }
   })();
 })();

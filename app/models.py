@@ -117,6 +117,7 @@ class Dispatch(db.Model):
     dispatch_type = db.Column(db.String(10), nullable=False)  # TRANSFER | SALE | NON_SALE
     price_per_litre = db.Column(db.Numeric(12, 2))
     payment_status = db.Column(db.String(10))
+    amount_paid = db.Column(db.Numeric(12, 2), nullable=False, default=0)
     non_sale_reason = db.Column(db.String(255))
     recorded_by = db.Column(db.ForeignKey("users.id"), nullable=False)
     entered_at = db.Column(db.DateTime, nullable=False)
@@ -228,6 +229,32 @@ class ExpenseCategory(db.Model):
     name = db.Column(db.String(80), nullable=False)
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     __table_args__ = (db.UniqueConstraint("business_id", "name"),)
+
+
+class Expense(db.Model):
+    __tablename__ = "expenses"
+    id = db.Column(db.BigInteger().with_variant(db.Integer, "sqlite"), primary_key=True)
+    business_id = db.Column(db.ForeignKey("businesses.id"), nullable=False)
+    category_id = db.Column(db.ForeignKey("expense_categories.id"), nullable=False)
+    veterinary_record_id = db.Column(db.BigInteger().with_variant(db.Integer, "sqlite"))
+    area = db.Column(db.String(10))
+    expense_date = db.Column(db.Date, nullable=False)
+    amount = db.Column(db.Numeric(14, 2), nullable=False)
+    description = db.Column(db.Text)
+    recorded_by = db.Column(db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    payments = db.relationship("ExpensePayment", backref="expense", cascade="all, delete-orphan")
+
+
+class ExpensePayment(db.Model):
+    __tablename__ = "expense_payments"
+    id = db.Column(db.BigInteger().with_variant(db.Integer, "sqlite"), primary_key=True)
+    business_id = db.Column(db.ForeignKey("businesses.id"), nullable=False)
+    expense_id = db.Column(db.ForeignKey("expenses.id"), nullable=False)
+    amount = db.Column(db.Numeric(14, 2), nullable=False)
+    payment_date = db.Column(db.Date, nullable=False)
+    recorded_by = db.Column(db.ForeignKey("users.id"), nullable=False)
+    notes = db.Column(db.Text)
 
 
 class ProductPrice(db.Model):

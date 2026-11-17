@@ -69,6 +69,159 @@ def test_sale_reduces_stock_and_calculates_revenue(app, stocked):
     assert shop_stock(stocked, app)["FRESH_MILK"] == D("70")
 
 
+def test_sale_detail_provides_customer_receipt_fields(app, owner, stocked):
+    created = sale(stocked, app, [dict(product_type="FRESH_MILK", quantity_litres="2")])
+    sale_id = created.get_json()["record"]["id"]
+    response = owner.get(f"/api/sales/{sale_id}")
+    assert response.status_code == 200
+    receipt = response.get_json()["record"]
+    assert receipt["sale_date"] == "2026-11-01"
+    assert receipt["shop"] == "Main Shop"
+    assert receipt["recorded_by"] == "Attendant1"
+    assert receipt["total"] == "160.00"
+    assert receipt["items"] == [{
+        "product": "Fresh Milk", "quantity_litres": "2.000",
+        "unit_price": "80.00", "line_total": "160.00"
+    }]
+    assert owner.get("/api/sales/999999").status_code == 404
+
+
+def test_expense_routes_are_owner_only_and_report_paid_status(app, owner, milker, monkeypatch):
+    import app.routes as routes
+    from app.extensions import db
+    from app.models import ExpenseCategory
+    monkeypatch.setattr(routes, "utcnow", lambda: datetime(2026, 11, 2, 7, 0, 0))
+    with app.app_context():
+        ExpenseCategory.query.filter_by(business_id=app.ids["biz"]).delete()
+        db.session.add_all([
+            ExpenseCategory(business_id=app.ids["biz"], name=name)
+            for name in ("Animal feeds", "Wages", "Transport", "Utilities",
+                         "Veterinary services", "Repairs", "Other")
+        ])
+        db.session.commit()
+    cats_response = owner.get("/api/expense-categories")
+    assert cats_response.status_code == 200
+    categories = {item["name"]: item["id"] for item in cats_response.get_json()["items"]}
+    assert set(categories) == {
+        "Feeds", "Veterinary", "Salaries", "Electricity", "Water",
+        "Maintenance", "Transport", "Equipment", "Rent", "Other"
+    }
+    assert milker.get("/api/expense-categories").status_code == 403
+    assert milker.post("/api/expenses", json={}).status_code == 403
+
+    paid = owner.post("/api/expenses", json={
+        "area": "FARM", "expense_date": "2026-11-02", "category_id": categories["Feeds"],
+        "amount": "1250.50", "description": "Feed for the cows", "payment_status": "PAID"
+    })
+    unpaid = owner.post("/api/expenses", json={
+        "area": "SHOP", "expense_date": "2026-11-01", "category_id": categories["Veterinary"],
+        "amount": "500", "description": "Routine check", "payment_status": "UNPAID"
+    })
+    assert paid.status_code == 201 and unpaid.status_code == 201
+    report = owner.get("/api/expenses?period=month&area=TOTALS")
+    assert report.status_code == 200
+    result = report.get_json()
+    assert result["total"] == "1750.50"
+    assert result["totals_by_area"] == {"FARM": "1250.50", "SHOP": "500.00"}
+    by_category = {row["category"]: row["total"] for row in result["by_category"]}
+    assert by_category["Feeds"] == "1250.50"
+    assert by_category["Veterinary"] == "500.00"
+    by_description = {row["description"]: row for row in result["items"]}
+    assert by_description["Feed for the cows"]["payment_status"] == "PAID"
+    assert by_description["Feed for the cows"]["amount_paid"] == "1250.50"
+    assert by_description["Routine check"]["payment_status"] == "UNPAID"
+    assert by_description["Routine check"]["area"] == "SHOP"
+    assert owner.get("/api/expenses?period=month&area=FARM").get_json()["total"] == "1250.50"
+    assert owner.get("/api/expenses?period=month&area=SHOP").get_json()["total"] == "500.00"
+    custom = owner.get("/api/expenses?date_from=2026-11-02&date_to=2026-11-02&area=TOTALS")
+    assert custom.status_code == 200
+    assert custom.get_json()["period"] == "custom"
+    assert custom.get_json()["total"] == "1250.50"
+    assert custom.get_json()["start_date"] == "2026-11-02"
+    assert owner.get("/api/expenses?date_from=2026-11-02").status_code == 400
+    assert owner.get("/api/expenses?date_from=2026-11-03&date_to=2026-11-02").status_code == 400
+    assert owner.get("/api/expenses?date_from=bad&date_to=2026-11-02").status_code == 400
+    assert owner.get("/api/expenses?period=fortnight").status_code == 400
+    assert owner.get("/api/expenses?area=INVALID").status_code == 400
+    assert owner.post("/api/expenses", json={
+        "area": "FARM", "expense_date": "2026-11-02", "category_id": categories["Other"],
+        "amount": "-1", "payment_status": "UNPAID"
+    }).status_code == 400
+    equipment_without_detail = owner.post("/api/expenses", json={
+        "area": "FARM", "expense_date": "2026-11-02", "category_id": categories["Equipment"],
+        "amount": "3000", "payment_status": "UNPAID"
+    })
+    assert equipment_without_detail.status_code == 400
+    equipment_with_detail = owner.post("/api/expenses", json={
+        "area": "FARM", "expense_date": "2026-11-02", "category_id": categories["Equipment"],
+        "amount": "3000", "description": "Portable milking machine", "payment_status": "UNPAID"
+    })
+    assert equipment_with_detail.status_code == 201
+
+
+def test_unpaid_expense_list_and_mark_paid(app, owner, milker, monkeypatch):
+    import app.routes as routes
+
+    monkeypatch.setattr(routes, "utcnow", lambda: datetime(2026, 11, 12, 7, 0, 0))
+    categories = owner.get("/api/expense-categories").get_json()["items"]
+    category_id = next(item["id"] for item in categories if item["name"] == "Feeds")
+    newer = owner.post("/api/expenses", json={
+        "area": "FARM", "expense_date": "2026-11-10", "category_id": category_id,
+        "amount": "1250.00", "description": "Silage", "payment_status": "UNPAID"
+    }).get_json()["record"]
+    older = owner.post("/api/expenses", json={
+        "area": "SHOP", "expense_date": "2026-11-02", "category_id": category_id,
+        "amount": "8500.00", "description": "Restock", "payment_status": "UNPAID"
+    }).get_json()["record"]
+
+    assert milker.get("/api/expenses/unpaid").status_code == 403
+    bills = owner.get("/api/expenses/unpaid").get_json()
+    assert [item["id"] for item in bills["items"]] == [older["id"], newer["id"]]
+    assert bills["items"][0]["days_old"] == 10
+    assert bills["total_due"] == "9750.00"
+
+    paid = owner.post(f"/api/expenses/{older['id']}/pay")
+    assert paid.status_code == 201
+    assert paid.get_json()["record"]["amount_paid"] == "8500.00"
+    assert [item["id"] for item in owner.get("/api/expenses/unpaid").get_json()["items"]] == [newer["id"]]
+    assert owner.post(f"/api/expenses/{older['id']}/pay").status_code == 409
+    assert milker.post(f"/api/expenses/{newer['id']}/pay").status_code == 403
+    assert owner.post("/api/expenses/999999/pay").status_code == 404
+
+
+def test_expense_report_compares_periods_and_includes_revenue_trend(app, owner, milker, stocked, monkeypatch):
+    import app.routes as routes
+
+    monkeypatch.setattr(routes, "utcnow", lambda: datetime(2026, 11, 2, 7, 0, 0))
+    categories = {item["name"]: item["id"] for item in owner.get("/api/expense-categories").get_json()["items"]}
+    for day, amount in (("2026-11-01", "250"), ("2026-11-02", "500")):
+        response = owner.post("/api/expenses", json={
+            "area": "FARM", "expense_date": day, "category_id": categories["Feeds"],
+            "amount": amount, "description": "Feed", "payment_status": "UNPAID"
+        })
+        assert response.status_code == 201
+
+    assert sale(stocked, app, [dict(product_type="FRESH_MILK", quantity_litres="5")],
+                date="2026-11-02").status_code == 201
+    direct_sale = owner.post("/api/direct-sales", json={
+        "farm_id": app.ids["farm"], "destination_name": "Hotel", "quantity_litres": "2",
+        "price_per_litre": "75", "dispatched_at": "2026-11-02T08:00:00Z",
+        "payment_status": "PAID"
+    })
+    assert direct_sale.status_code == 201
+
+    report = owner.get("/api/expenses?date_from=2026-11-02&date_to=2026-11-02&area=TOTALS")
+    assert report.status_code == 200
+    result = report.get_json()
+    assert result["total"] == "500.00" and result["revenue"] == "550.00"
+    assert result["previous_period"] == {
+        "start_date": "2026-11-01", "end_date": "2026-11-01",
+        "expenses": "250.00", "revenue": "0.00"
+    }
+    assert result["daily"] == [{"date": "2026-11-02", "expenses": "500.00", "revenue": "550.00"}]
+    assert owner.get("/api/expenses?date_from=2025-01-01&date_to=2026-11-02").status_code == 400
+
+
 def test_same_product_at_two_prices_in_one_sale(app, stocked):
     r = sale(stocked, app, [dict(product_type="FRESH_MILK", quantity_litres="10"),
                             dict(product_type="FRESH_MILK", quantity_litres="5", unit_price="70")])

@@ -10,6 +10,10 @@ window.API = (function () {
     sessionToken = token;
   }
 
+  function connectionEvent(name) {
+    window.dispatchEvent(new Event(name));
+  }
+
   async function request(method, url, body) {
     const isLogin = url === '/auth/login' || url === '/auth/setup';
     const opts = { method: method, headers: { Accept: 'application/json' }, credentials: 'omit' };
@@ -22,10 +26,20 @@ window.API = (function () {
     try {
       res = await fetch(url, opts);
     } catch (e) {
+      connectionEvent('dairy:network-error');
       const err = new Error('Cannot reach the server. Check your connection and try again.');
       err.network = true;
+      if (method === 'GET' && window.DairyOffline) {
+        try {
+          const cached = await DairyOffline.readSnapshot(url);
+          if (cached !== null) return cached;
+        } catch (storageError) {
+          console.error('Unable to read an offline snapshot.', storageError);
+        }
+      }
       throw err;
     }
+    connectionEvent('dairy:network-restored');
     let data = null;
     try { data = await res.json(); } catch (e) { /* no JSON body */ }
     if (res.ok && data && data.session_token) setSessionToken(data.session_token);
@@ -42,6 +56,10 @@ window.API = (function () {
       err.status = res.status;
       err.data = data;
       throw err;
+    }
+    if (method === 'GET' && window.DairyOffline) {
+      try { await DairyOffline.saveSnapshot(url, data); }
+      catch (storageError) { console.error('Unable to save an offline snapshot.', storageError); }
     }
     return data;
   }
@@ -62,6 +80,9 @@ window.API = (function () {
     get: function (url) { return request('GET', url); },
     post: function (url, body) { return request('POST', url, body === undefined ? {} : body); },
     uuid: uuid,
+    setOfflineScope: function (scope) {
+      if (window.DairyOffline) DairyOffline.setScope(scope);
+    },
     setUnauthorizedHandler: function (fn) { onUnauthorized = fn; },
     setPasswordChangeHandler: function (fn) { onPasswordChange = fn; }
   };

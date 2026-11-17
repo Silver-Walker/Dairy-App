@@ -72,6 +72,30 @@ def test_external_sale_deducts_once_and_uses_owner_price(app, owner, milker):
     assert stock(milker, farm_id=app.ids["farm"])["FRESH_MILK"] == D("20")  # deducted once
 
 
+def test_milker_dispatch_records_partial_payment_and_balance(app, owner, milker):
+    from datetime import datetime, timedelta, timezone
+    owner.post("/api/prices", json=dict(product_type="FRESH_MILK", selling_price="60"))
+    assert milker.get("/api/dispatches/price").get_json()["selling_price"] == "60.00"
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    produce(milker, app, "20", date=(now + timedelta(hours=3)).date().isoformat())
+    response = dispatch(milker, app, "5", dispatched_at=now.isoformat(), destination_type="EXTERNAL",
+                        destination_name="Hotel X", destination_shop_id=None, dispatch_type="SALE",
+                        payment_status="PARTIAL", amount_paid="120")
+    assert response.status_code == 201
+    record = response.get_json()["record"]
+    assert record["payment_status"] == "PARTIAL"
+    assert record["amount_paid"] == "120.00"
+    assert record["remaining_balance"] == "180.00"
+    listed = milker.get("/api/dispatches").get_json()["items"][0]
+    assert listed["payment_status"] == "PARTIAL"
+    assert listed["remaining_balance"] == "180.00"
+
+    overpaid = dispatch(milker, app, "1", dispatched_at=now.isoformat(), destination_type="EXTERNAL",
+                        destination_name="Hotel Y", destination_shop_id=None, dispatch_type="SALE",
+                        payment_status="PARTIAL", amount_paid="60")
+    assert overpaid.status_code == 400
+
+
 def test_owner_can_record_direct_farm_sale_to_friend(app, owner, milker):
     from datetime import datetime, timedelta, timezone
     owner.post("/api/prices", json=dict(product_type="FRESH_MILK", selling_price="60"))
@@ -87,8 +111,13 @@ def test_owner_can_record_direct_farm_sale_to_friend(app, owner, milker):
     assert stock(owner, farm_id=app.ids["farm"])["FRESH_MILK"] == D("45")
     sale_id = response.get_json()["record"]["id"]
     assert owner.get("/api/direct-sales").get_json()["items"][0]["payment_status"] == "UNPAID"
+    partial = owner.post(f"/api/direct-sales/{sale_id}/payment",
+                         json={"payment_status": "PARTIAL", "amount_paid": "100"})
+    assert partial.status_code == 200
+    assert partial.get_json()["record"]["remaining_balance"] == "275.00"
     updated = owner.post(f"/api/direct-sales/{sale_id}/payment", json={"payment_status": "PAID"})
     assert updated.status_code == 200 and updated.get_json()["record"]["payment_status"] == "PAID"
+    assert updated.get_json()["record"]["remaining_balance"] == "0.00"
 
 
 def test_owner_can_record_personal_farm_use_without_revenue(app, owner, milker):

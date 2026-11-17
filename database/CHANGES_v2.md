@@ -1,5 +1,5 @@
 # Database v2: what changed from v1 and why
-Schema v2.1 adds per-tab authentication sessions so multiple users can be signed in independently in separate browser tabs. Schema v2.2 adds buyer payment tracking for owner-recorded farm sales. Run the sequential upgrades in `WINDOWS_SETUP.md`.
+Schema v2.1 adds per-tab authentication sessions so multiple users can be signed in independently in separate browser tabs. Schema v2.2 adds buyer payment tracking for owner-recorded farm sales. Schema v2.3 adds expense locations and standard expense categories. Schema v2.4 adds amounts paid for buyer sales, including partial payments. Run the sequential upgrades in `WINDOWS_SETUP.md`.
 
 | Review point | Result |
 |---|---|
@@ -15,5 +15,6 @@ Schema v2.1 adds per-tab authentication sessions so multiple users can be signed
 | Backups | `flask backup` command + restore steps. |
 | Dispatch/receipt item uniqueness | `UNIQUE (dispatch_id, product_id)` and `UNIQUE (receipt_id, product_id)`. |
 | Tab-scoped authentication | `auth_sessions` stores hashed, expiring per-tab session tokens; see the v2.1 migration. |
-| Buyer farm sales | External farm sales store PAID/UNPAID status; unpaid sales can be marked paid later. |
+| Buyer farm sales | External farm sales store PAID/UNPAID/PARTIAL status and amount paid, with the remaining balance calculated from the sale total. The dispatch screen reads the configured fresh-milk price. |
+| Expenses | Owner-only expense records have an optional historical area and new records require Farm or Shop; v2.3 seeds the standard categories and requires equipment details in the app. |
 | Tests | Backend tests are run on SQLite by default and can also run on real MySQL. |

@@ -18,13 +18,32 @@ def test_home_page_and_static_files_are_served(app):
     assert r.status_code == 200 and b"Dairy Farm Manager" in r.data
     assert r.headers["X-Frame-Options"] == "DENY" and "script-src 'self'" in r.headers["Content-Security-Policy"]
     for path in ("/static/css/style.css", "/static/js/app.js", "/static/js/api.js",
-                 "/static/js/charts.js", "/static/vendor/chart.umd.js"):
+                 "/static/js/offline.js", "/static/js/charts.js", "/static/vendor/chart.umd.js",
+                 "/service-worker.js"):
         assert c.get(path).status_code == 200, path
+    assert c.get("/service-worker.js").headers["Service-Worker-Allowed"] == "/"
     # no inline <script> or style="" (the page's security policy forbids them)
     html = r.data.decode()
     assert "<script>" not in html and ' style="' not in html and " onclick=" not in html
+    assert 'id="offline-login-form"' in html and 'id="offline-pin-form"' in html
+    assert html.count('class="optional-note"') == 9
+    assert 'id="profile-toggle"' in html and 'id="profile-initial"' in html
+    assert 'id="account-settings"' in html and 'id="view-account"' not in html
+    assert 'id="profile-colors"' in html and 'id="profile-size"' in html
+    assert 'id="expense-trend-grain"' in html and 'id="ch-expense-trend"' in html
+    assert 'id="expense-trend-status"' in html
+    assert 'id="expense-revenue-total"' in html and 'id="expense-comparison"' in html
+    assert 'id="production-greeting"' in html and 'id="production-today-total"' in html
+    assert 'id="production-last-dispatch"' in html and 'data-production-session="LUNCH"' in html
+    assert "Compared with previous period" in html
+    assert 'id="user-role-dialog"' in html and 'id="user-role-form"' in html
+    users_view = html.split('<section id="view-users"', 1)[1].split('<!-- ---------- Activity log', 1)[0]
+    assert 'id="account-settings"' not in users_view and 'id="pw-form"' not in users_view
+    assert 'id="user-form"' in users_view and 'id="tbl-users"' in users_view
+    assert 'id="bell"' in html
     assert "no-store" in r.headers["Cache-Control"]
     assert "no-store" in c.get("/static/js/api.js").headers["Cache-Control"]
+    assert "no-store" in c.get("/static/js/offline.js").headers["Cache-Control"]
 
 
 def test_existing_sqlite_database_adds_buyer_payment_column(tmp_path):
@@ -65,6 +84,7 @@ def test_lists_show_what_was_recorded(app, milker, attendant):
     assert production["recorded_by"] == "Milker1"
     row = milker.get("/api/dispatches").get_json()["items"][0]
     assert row["status"] == "NOT_RECEIVED" and row["destination"] == "Main Shop"
+    assert row["farm_id"] == app.ids["farm"]
     pend = attendant.get("/api/dispatches/pending").get_json()["items"]
     assert [p["id"] for p in pend] == [d["id"]]
     attendant.post("/api/receipts", json=dict(shop_id=app.ids["shop"], dispatch_id=d["id"],
@@ -72,7 +92,24 @@ def test_lists_show_what_was_recorded(app, milker, attendant):
     assert attendant.get("/api/dispatches/pending").get_json()["items"] == []
     rec = attendant.get("/api/receipts").get_json()["items"][0]
     assert rec["difference"] == "-2.000" and rec["reference"] == d["reference"]
+    assert rec["recorded_by"] == "Attendant1"
     assert attendant.get("/api/production").status_code == 403       # shop attendant cannot see production list
+
+
+def test_production_list_can_filter_by_date_and_farm(app, milker):
+    produce(milker, app, "100", date="2026-10-30")
+    produce(milker, app, "80", session="LUNCH", date="2026-10-31")
+    filtered = milker.get(
+        f"/api/production?date=2026-10-30&farm_id={app.ids['farm']}"
+    )
+    assert filtered.status_code == 200
+    items = filtered.get_json()["items"]
+    assert len(items) == 1
+    assert items[0]["date"] == "2026-10-30"
+    assert items[0]["farm_id"] == app.ids["farm"]
+    assert items[0]["quantity_litres"] == "100.000"
+    assert milker.get("/api/production?date=not-a-date").status_code == 400
+    assert milker.get("/api/production?farm_id=not-an-id").status_code == 400
 
 
 def test_notifications_can_be_marked_read(app, milker, attendant, owner):

@@ -14,30 +14,45 @@ Then tell PowerShell where `mysql.exe` is (adjust 8.4 to your version):
 
     $mysql = "C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe"
 
-## 3. Create the database and tables (schema v2.2)
+## 3. Create the database and tables (schema v2.4)
 PowerShell does not support `<`, so use `source`:
 
     & $mysql -u root -p -e "source database/dairy_schema_v2.sql"
     & $mysql -u root -p -e "USE dairy_app; SHOW TABLES;"       # about 32 tables
 
-> **Already created the database from the older v1 file (with real data in it)?** Do not run the new schema over it. Back up, then run all three upgrades:
+> **Already created the database from the older v1 file (with real data in it)?** Do not run the new schema over it. Back up, then run all five upgrades:
 >
 >     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v1_to_v2.sql"
 >     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_1_tab_sessions.sql"
 >     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_2_buyer_sales.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_3_expense_areas_categories.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_4_dispatch_partial_payments.sql"
 >
 > Your data is kept.
 
-> **Already using schema v2.0?** Back up first, then run both upgrades:
+> **Already using schema v2.0?** Back up first, then run all four upgrades:
 >
 >     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_1_tab_sessions.sql"
 >     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_2_buyer_sales.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_3_expense_areas_categories.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_4_dispatch_partial_payments.sql"
 >
 > Your data is kept.
 
-> **Already using schema v2.1?** Back up first, then run the buyer-sales upgrade:
+> **Already using schema v2.1?** Back up first, then run all three upgrades:
 >
 >     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_2_buyer_sales.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_3_expense_areas_categories.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_4_dispatch_partial_payments.sql"
+
+> **Already using schema v2.2?** Back up first, then run the expense and partial-payment upgrades:
+>
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_3_expense_areas_categories.sql"
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_4_dispatch_partial_payments.sql"
+>
+> **Already using schema v2.3?** Back up first, then run the partial-payments upgrade:
+>
+>     & $mysql -u root -p -e "source database/upgrade/dairy_migrate_v2_4_dispatch_partial_payments.sql"
 
 ## 4. Create the app's own MySQL login (the app never runs as root)
 Open `database\dairy_db_user.sql`, replace `CHANGE_ME_strong_password` with a password you choose (letters and numbers), then:
@@ -79,6 +94,13 @@ This writes a file such as `backups\dairy_2026-11-10_180000.sql` with all your d
 **Copy the file to a flash drive or cloud storage too**, not only the same computer.
 If `mysqldump` is not found, add `MYSQLDUMP_PATH=...` to `.env` (see `.env.example`).
 Tip: Windows *Task Scheduler* can run the backup command every night.
+
+## 11. Recording while offline
+The hosted site must use **HTTPS** for service workers and offline PIN sign-in (localhost is also supported for development). Each user must open the site and sign in online at least once on each browser/device so the app files and their local profile are downloaded. While online, open **Account** and set an **Offline access PIN**. Later, open the same site link while offline and enter the username and this PIN at **Unlock offline**. The first visit to a hosted site cannot work offline because the browser has not downloaded the app yet.
+
+The device stores a salted PIN verifier and the minimum local account/location profile needed to unlock the app; it never stores the account password or server session token. Offline access is local to that browser/device, so shared devices should use a private browser profile and users should remove the offline PIN before handing the device to someone else. The profile must be refreshed by signing in online at least every 30 days. When connected again, sign in with the normal account password; queued entries will sync automatically.
+
+Production, dispatch, milk receipt, processing, sales, losses, and daily closing entries are saved in that browser's local queue and uploaded automatically when the connection returns. The banner shows how many are waiting. If a record is rejected by server validation or a stock/closing conflict, it stays on the device and the banner explains that it needs attention; it is not silently discarded or used to overwrite an existing record. Local queued entries and cached operational data are specific to the signed-in user and business on that browser; they are not a substitute for the MySQL backup in step 10.
 
 **Restoring** (only if something goes wrong): rebuild an empty database from the schema, then load the backup:
 

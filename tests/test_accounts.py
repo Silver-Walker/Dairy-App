@@ -105,6 +105,25 @@ def test_users_list_only_shows_own_business_and_cannot_touch_others(app, owner):
     assert client(app, "x_milker1")[1].status_code == 200                                    # still works
 
 
+def test_owner_can_change_user_role_and_cannot_demote_themselves(app, owner):
+    from app.models import User
+    with app.app_context():
+        milker_id = User.query.filter_by(username="milker1").first().id
+        owner_id = User.query.filter_by(username="owner1").first().id
+
+    assert owner.post(f"/api/users/{milker_id}/role", json={"role": "SHOP_ATTENDANT"}).status_code == 200
+    assert owner.post(f"/api/users/{milker_id}/role", json={"role": "NOT_A_ROLE"}).status_code == 400
+    assert owner.post(f"/api/users/{owner_id}/role", json={"role": "MILKER"}).status_code == 400
+    listed = {row["username"]: row for row in owner.get("/api/users").get_json()["items"]}
+    assert listed["milker1"]["roles"] == ["SHOP_ATTENDANT"]
+
+    changed_user, login_response = client(app, "milker1", PW)
+    assert login_response.status_code == 200
+    assert login_response.get_json()["roles"] == ["SHOP_ATTENDANT"]
+    assert changed_user.get("/api/production").status_code == 403
+    assert changed_user.get("/api/processing").status_code == 200
+
+
 def test_deactivate_and_reactivate(app, owner, milker):
     from app.models import User
     with app.app_context():

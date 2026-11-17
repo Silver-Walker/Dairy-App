@@ -11,6 +11,10 @@ from ..models import (AuditLog, Business, BusinessSettings, ExpenseCategory, Far
 from .errors import ConflictError, ForbiddenError, NotFoundError, ValidationError
 
 ROLES = ("OWNER", "MILKER", "SHOP_ATTENDANT")
+EXPENSE_CATEGORIES = (
+    "Feeds", "Veterinary", "Salaries", "Electricity", "Water",
+    "Maintenance", "Transport", "Equipment", "Rent", "Other",
+)
 MAX_FAILED_LOGINS = 5
 LOCK_MINUTES = 15
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{2,39}$")
@@ -57,10 +61,28 @@ def create_business_defaults(name, farm_name="Main Farm", shop_name="Main Shop")
     db.session.add_all([farm, shop])
     for pname, t in (("Fresh Milk", "FRESH_MILK"), ("Yoghurt", "YOGHURT"), ("Maziwa Mala", "MAZIWA_MALA")):
         db.session.add(Product(business_id=b.id, name=pname, product_type=t))
-    for cat in ("Animal feeds", "Wages", "Transport", "Utilities", "Veterinary services", "Repairs", "Other"):
+    for cat in EXPENSE_CATEGORIES:
         db.session.add(ExpenseCategory(business_id=b.id, name=cat))
     db.session.flush()
     return b, farm, shop
+
+
+def ensure_expense_categories(business_id):
+    """Create missing standard categories for businesses set up before expense entry existed."""
+    rows = ExpenseCategory.query.filter_by(business_id=business_id).all()
+    existing = {row.name: row for row in rows}
+    missing = []
+    reactivated = False
+    for name in EXPENSE_CATEGORIES:
+        category = existing.get(name)
+        if category is None:
+            missing.append(ExpenseCategory(business_id=business_id, name=name))
+        elif not category.is_active:
+            category.is_active = True
+            reactivated = True
+    if missing or reactivated:
+        db.session.add_all(missing)
+        db.session.commit()
 
 
 def bootstrap(data):
@@ -182,6 +204,39 @@ def set_active(business_id, actor_id, user_id, active):
         m.is_active = bool(active)
     _audit(business_id, actor_id, "ACTIVATE" if active else "DEACTIVATE", user_id, {"active": bool(active)})
     db.session.commit()
+
+
+def change_role(business_id, actor_id, user_id, new_role):
+    memberships = _member(business_id, user_id)
+    role = str(new_role or "").strip().upper()
+    if role not in ROLES:
+        raise ValidationError("Choose a role: owner, milker or shop attendant.")
+    old_roles = sorted(m.role for m in memberships)
+    if old_roles == [role]:
+        return
+    if user_id == actor_id and role != "OWNER":
+        raise ValidationError("You cannot change your own owner role.")
+    if role != "OWNER" and any(m.role == "OWNER" and m.is_active for m in memberships) and \
+            _active_owner_count(business_id) <= 1:
+        raise ValidationError("You cannot change the role of the only active owner.")
+
+    active = all(m.is_active for m in memberships)
+    retained = next((m for m in memberships if m.role == role), None)
+    try:
+        for membership in memberships:
+            if membership is not retained:
+                db.session.delete(membership)
+        if retained:
+            retained.is_active = active
+        else:
+            db.session.flush()
+            db.session.add(Membership(business_id=business_id, user_id=user_id, role=role, is_active=active))
+        _audit(business_id, actor_id, "CHANGE_ROLE", user_id,
+               {"old_roles": old_roles, "new_role": role})
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
 
 def reset_password(business_id, actor_id, user_id, new_password):

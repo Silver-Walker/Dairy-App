@@ -1,5 +1,5 @@
 -- =====================================================================
--- Dairy Farm Management System - MySQL 8.0.16+ schema  (VERSION 2.2)
+-- Dairy Farm Management System - MySQL 8.0.16+ schema  (VERSION 2.4)
 -- This ONE file is the complete database. It replaces the earlier v1.0 and v1.1 files.
 --
 -- Run (Windows PowerShell):  & $mysql -u root -p -e "source database/dairy_schema_v2.sql"
@@ -34,7 +34,7 @@ CREATE TABLE schema_version (
   version     VARCHAR(20) NOT NULL PRIMARY KEY,
   applied_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
-INSERT INTO schema_version (version) VALUES ('2.2');
+INSERT INTO schema_version (version) VALUES ('2.4');
 
 CREATE TABLE business_settings (
   business_id            BIGINT UNSIGNED PRIMARY KEY,
@@ -167,7 +167,8 @@ CREATE TABLE dispatches (
   dispatched_at     DATETIME NOT NULL,
   dispatch_type     ENUM('TRANSFER','SALE','NON_SALE') NOT NULL,
   price_per_litre   DECIMAL(12,2) NULL,                 -- external sale only
-  payment_status    VARCHAR(10) NULL,                   -- tracked for owner-recorded buyer sales
+  payment_status    VARCHAR(10) NULL,                   -- tracked for buyer sales
+  amount_paid       DECIMAL(12,2) NOT NULL DEFAULT 0,
   non_sale_reason   VARCHAR(255) NULL,                  -- external non-sale only
   recorded_by       BIGINT UNSIGNED NOT NULL,
   entered_at        DATETIME NOT NULL,
@@ -487,6 +488,7 @@ CREATE TABLE expenses (
   business_id           BIGINT UNSIGNED NOT NULL,
   category_id           BIGINT UNSIGNED NOT NULL,
   veterinary_record_id  BIGINT UNSIGNED NULL UNIQUE,    -- one expense per vet record => counted once
+  area                  VARCHAR(10) NULL,               -- FARM or SHOP; NULL for legacy records
   expense_date          DATE NOT NULL,                  -- date incurred
   amount                DECIMAL(14,2) NOT NULL CHECK (amount >= 0),
   description           TEXT NULL,

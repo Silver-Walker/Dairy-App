@@ -8,12 +8,17 @@
 </head>
 <body>
   <div id="toasts" aria-live="polite"></div>
+  <div id="offline-banner" class="offline-banner" role="status" hidden>
+    <span id="offline-message"></span>
+    <button id="offline-sync" class="btn small" type="button" hidden>Sync now</button>
+  </div>
 
   <!-- ============ LOGIN ============ -->
   <section id="login-view" class="login-wrap" hidden>
     <form id="login-form" class="card login-card" hidden>
       <h1>🐄 Dairy Farm Manager</h1>
       <p class="muted">Sign in to continue</p>
+      <p class="hint">For offline access, open the site online first and set an offline PIN from your profile button.</p>
       <label>Username
         <input name="username" required autocomplete="username" autocapitalize="none">
       </label>
@@ -22,6 +27,20 @@
       </label>
       <p id="login-error" class="msg error" role="alert" hidden></p>
       <button class="btn primary" type="submit">Sign in</button>
+    </form>
+
+    <form id="offline-login-form" class="card login-card" hidden>
+      <h1>🐄 Dairy Farm Manager</h1>
+      <p class="muted">No internet connection. Unlock this device with your offline PIN. The app must have been opened online on this browser before.</p>
+      <label>Username
+        <input name="username" required autocomplete="username" autocapitalize="none">
+      </label>
+      <label>Offline PIN
+        <input name="pin" type="password" required minlength="8" maxlength="128" autocomplete="off">
+      </label>
+      <p id="offline-login-error" class="msg error" role="alert" hidden></p>
+      <button class="btn primary" type="submit">Unlock offline</button>
+      <button id="online-login-link" class="btn" type="button">Use regular sign in</button>
     </form>
 
     <form id="setup-form" class="card login-card" hidden>
@@ -42,18 +61,108 @@
   <!-- ============ APP ============ -->
   <div id="app-view" hidden>
     <header class="topbar">
-      <div class="brand">🐄 <span id="biz-name">Dairy Farm Manager</span></div>
+      <a class="brand" href="#dashboard" aria-label="Dairy Farm Manager home">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <span id="biz-name">Dairy Farm Manager</span>
+      </a>
+      <nav id="nav" class="tabs" aria-label="Main"></nav>
       <div class="topbar-right">
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+          <span class="theme-sun" aria-hidden="true">☀</span>
+          <span class="theme-moon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path class="moon-shape" d="M20.2 14.7A9.1 9.1 0 0 1 9.3 3.8 9.2 9.2 0 1 0 20.2 14.7Z"/>
+              <path class="moon-star" d="m16.1 5 .9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/>
+              <path class="moon-star" d="m19.4 11.1.7 1.5 1.5.7-1.5.7-.7 1.5-.7-1.5-1.5-.7 1.5-.7z"/>
+            </svg>
+          </span>
+          <span class="theme-thumb" aria-hidden="true"></span>
+        </button>
         <button id="bell" class="icon-btn" title="Alerts" aria-label="Alerts">🔔<span id="bell-badge" class="badge" hidden>0</span></button>
-        <span id="who" class="muted"></span>
+        <div id="profile-menu" class="profile-menu">
+          <button id="profile-toggle" class="profile-toggle" type="button" aria-label="Open profile menu" aria-expanded="false" aria-controls="profile-panel">
+            <span id="profile-avatar" class="profile-avatar" data-avatar-color="teal" data-avatar-size="48" aria-hidden="true">
+              <span id="profile-initial"></span>
+            </span>
+            <span id="who" class="profile-name"></span>
+          </button>
+          <div id="profile-panel" class="profile-panel" hidden>
+            <div class="profile-panel-heading">
+              <h2>Profile</h2>
+              <button id="profile-close" class="icon-btn" type="button" aria-label="Close profile menu">×</button>
+            </div>
+            <section id="account-settings" aria-label="My account settings">
+              <p id="pw-banner" class="msg warn" hidden>You are using a temporary password. Please choose your own password to continue.</p>
+              <div class="card"><h3>My account</h3><div id="account-info" class="stock-list"></div></div>
+              <div class="account-settings-forms">
+                <form id="pw-form" class="card">
+                  <h3>Change my password</h3>
+                  <label>Current password <input name="current_password" type="password" required autocomplete="current-password"></label>
+                  <label>New password (at least 8 characters) <input name="new_password" type="password" required minlength="8" autocomplete="new-password"></label>
+                  <label>Repeat the new password <input name="new_password2" type="password" required minlength="8" autocomplete="new-password"></label>
+                  <p class="msg" role="alert" hidden></p>
+                  <button class="btn primary" type="submit">Change password</button>
+                </form>
+                <form id="offline-pin-form" class="card">
+                  <h3>Offline access on this device</h3>
+                  <p class="hint">Set a device-only PIN after signing in online. You can then use it to unlock offline features in this browser. Use at least 8 characters. Your password and server session are never saved here.</p>
+                  <label>New offline PIN <input name="pin" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
+                  <label>Confirm offline PIN <input name="pin_confirm" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label>
+                  <p id="offline-pin-status" class="hint" role="status"></p>
+                  <p class="msg" role="alert" hidden></p>
+                  <div class="button-row">
+                    <button class="btn primary" type="submit">Save offline PIN</button>
+                    <button id="offline-pin-remove" class="btn" type="button">Remove offline PIN</button>
+                  </div>
+                </form>
+              </div>
+              <section class="card profile-customize">
+                <h3>Customize profile button</h3>
+                <fieldset id="profile-colors">
+                  <legend>Avatar color</legend>
+                  <button class="avatar-color" type="button" data-color="teal" aria-label="Teal avatar color" aria-pressed="true"></button>
+                  <button class="avatar-color" type="button" data-color="blue" aria-label="Blue avatar color" aria-pressed="false"></button>
+                  <button class="avatar-color" type="button" data-color="purple" aria-label="Purple avatar color" aria-pressed="false"></button>
+                  <button class="avatar-color" type="button" data-color="red" aria-label="Red avatar color" aria-pressed="false"></button>
+                  <button class="avatar-color" type="button" data-color="orange" aria-label="Orange avatar color" aria-pressed="false"></button>
+                  <button class="avatar-color" type="button" data-color="slate" aria-label="Slate avatar color" aria-pressed="false"></button>
+                </fieldset>
+                <label for="profile-size">Avatar size <output id="profile-size-value" for="profile-size">48 px</output></label>
+                <input id="profile-size" type="range" min="36" max="64" step="4" value="48">
+              </section>
+            </section>
+          </div>
+        </div>
         <button id="logout" class="btn small">Log out</button>
       </div>
     </header>
-    <nav id="nav" class="tabs" aria-label="Main"></nav>
 
     <main>
+      <div id="attendant-page-heading" class="attendant-page-heading" hidden>
+        <div>
+          <h1 id="attendant-greeting"></h1>
+          <p id="attendant-date" class="muted"></p>
+        </div>
+      </div>
       <!-- ---------- Owner dashboard ---------- -->
       <section id="view-dashboard" class="view" hidden>
+        <div class="dashboard-heading">
+          <div>
+            <p class="eyebrow">DAIRY OPERATIONS</p>
+            <h1>Welcome back, <span id="dashboard-user">there</span></h1>
+            <p class="muted">Here is your farm and shop at a glance.</p>
+            <section class="needs-attention" aria-label="Needs attention" role="status">
+              <strong>Needs attention</strong>
+              <div class="attention-counts">
+                <span>Closings overdue <b id="attention-overdue">0</b></span>
+                <span>Closings to review <b id="attention-review">0</b></span>
+                <span>Discrepancies <b id="attention-discrepancies">0</b></span>
+                <span>Awaiting receipt <b id="attention-receipts">0</b></span>
+              </div>
+              <strong id="attention-status" class="attention-status">✓ All clear</strong>
+            </section>
+          </div>
+        </div>
         <div class="card toolbar">
           <label>From <input type="date" id="d-from"></label>
           <label>To <input type="date" id="d-to"></label>
@@ -64,6 +173,23 @@
             <button class="chip" data-days="30">30 days</button>
           </div>
         </div>
+
+        <section class="card milk-flow" aria-labelledby="milk-flow-title">
+          <div class="milk-flow-heading">
+            <h2 id="milk-flow-title">Milk flow</h2>
+            <span>From the farm to the shop</span>
+          </div>
+          <div class="milk-flow-stats">
+            <div class="milk-flow-stat"><span>Produced</span><strong id="flow-produced">0 L</strong></div>
+            <div class="milk-flow-stat"><span>Sent to shop</span><strong id="flow-sent">0 L</strong></div>
+            <div class="milk-flow-stat"><span>On the way</span><strong id="flow-transit">0 L</strong></div>
+            <div class="milk-flow-stat"><span>Received at shop</span><strong id="flow-received">0 L</strong></div>
+            <div class="milk-flow-stat"><span>Stock lost</span><strong id="flow-lost">0 L</strong></div>
+          </div>
+          <p id="milk-flow-empty" class="milk-flow-empty" hidden>
+            No milk production recorded in this period, so there is nothing to track yet.
+          </p>
+        </section>
 
         <div id="kpis" class="kpis"></div>
 
@@ -92,25 +218,64 @@
       </section>
 
       <!-- ---------- Production ---------- -->
-      <section id="view-production" class="view" hidden>
-        <div class="grid2">
-          <form id="prod-form" class="card">
-            <h3>Record milk production</h3>
+      <section id="view-production" class="view production-view" hidden>
+        <div class="production-heading">
+          <div>
+            <h1 id="production-greeting">Good morning</h1>
+            <p id="production-today-date" class="muted"></p>
+          </div>
+        </div>
+        <div class="production-layout">
+          <form id="prod-form" class="card production-entry">
+            <h2>Record milk production</h2>
             <label id="prod-farm-wrap">Farm <select name="farm_id"></select></label>
-            <label>Date <input type="date" name="production_date" required></label>
-            <label>Session
-              <select name="session">
-                <option value="MORNING">Morning</option>
-                <option value="LUNCH">Lunch</option>
-                <option value="EVENING">Evening</option>
-              </select></label>
-            <label>Quantity (litres)
-              <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
-            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <div class="production-session-picker">
+              <span class="production-field-label">Milking session</span>
+              <div class="production-session-buttons" role="group" aria-label="Milking session">
+                <button class="production-session" type="button" data-production-session="MORNING" aria-pressed="false">Morning</button>
+                <button class="production-session" type="button" data-production-session="LUNCH" aria-pressed="false">Lunch</button>
+                <button class="production-session" type="button" data-production-session="EVENING" aria-pressed="false">Evening</button>
+              </div>
+              <input type="hidden" name="session" value="MORNING">
+            </div>
+            <label class="production-date-field">Date <input type="date" name="production_date" required></label>
+            <label class="production-field-label" for="prod-quantity">Quantity (litres)</label>
+            <div class="production-quantity">
+              <button class="production-quantity-step" type="button" data-production-step="-1" aria-label="Decrease quantity">−</button>
+              <input id="prod-quantity" name="quantity_litres" type="number" step="0.001" min="0.001" value="0" inputmode="decimal" required>
+              <button class="production-quantity-step" type="button" data-production-step="1" aria-label="Increase quantity">+</button>
+            </div>
+            <p id="production-usual" class="production-usual muted"></p>
+            <p id="production-existing" class="production-existing" role="status" hidden></p>
+            <details class="optional-note"><summary>+ Add note</summary>
+              <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            </details>
             <p class="msg" role="alert" hidden></p>
-            <button class="btn primary" type="submit">Save production</button>
+            <button class="btn primary production-save" type="submit">Save production</button>
           </form>
-          <div class="card"><h3>Milk at the farm now</h3><div id="farm-stock" class="stock-list"></div></div>
+          <div class="production-side">
+            <section class="card production-today-card" aria-labelledby="production-today-title">
+              <h2 id="production-today-title">Today</h2>
+              <p id="production-today-total" class="muted">0 L recorded so far</p>
+              <div class="production-session-summary">
+                <div class="production-session-stat" data-session-stat="MORNING">
+                  <span>Morning</span><strong>—</strong><small>Not recorded</small>
+                </div>
+                <div class="production-session-stat" data-session-stat="LUNCH">
+                  <span>Lunch</span><strong>—</strong><small>Not recorded</small>
+                </div>
+                <div class="production-session-stat" data-session-stat="EVENING">
+                  <span>Evening</span><strong>—</strong><small>Not recorded</small>
+                </div>
+              </div>
+            </section>
+            <section class="card production-stock-card" aria-labelledby="farm-stock-title">
+              <h2 id="farm-stock-title">Milk at the farm now</h2>
+              <div id="farm-stock" class="stock-list production-stock"></div>
+              <p class="production-stock-caption">Fresh milk on hand at the farm</p>
+              <div class="production-last-dispatch"><span>Last dispatch</span><strong id="production-last-dispatch">No dispatches yet</strong></div>
+            </section>
+          </div>
         </div>
         <div class="card"><h3>Recent production</h3>
           <div class="table-wrap"><table id="tbl-prod"></table></div></div>
@@ -118,56 +283,119 @@
 
       <!-- ---------- Dispatch ---------- -->
       <section id="view-dispatch" class="view" hidden>
-        <form id="disp-form" class="card">
-          <h3>Dispatch milk from the farm</h3>
-          <div class="grid2">
-            <div>
-              <label id="disp-farm-wrap">Farm <select name="farm_id"></select></label>
-              <fieldset>
-                <legend>Where is it going?</legend>
-                <label class="inline"><input type="radio" name="destination_type" value="SHOP" checked> Our shop</label>
-                <label class="inline"><input type="radio" name="destination_type" value="EXTERNAL"> Somewhere else</label>
+        <div class="dispatch-layout">
+          <form id="disp-form" class="card dispatch-form">
+            <label id="disp-farm-wrap">Farm <select name="farm_id"></select></label>
+            <section class="dispatch-step" aria-labelledby="dispatch-destination-title">
+              <div class="dispatch-step-heading">
+                <span class="dispatch-step-number">1</span>
+                <h3 id="dispatch-destination-title">Where is the milk going?</h3>
+              </div>
+              <fieldset class="dispatch-destination-tabs">
+                <legend class="sr-only">Destination</legend>
+                <label class="dispatch-tab">
+                  <input type="radio" name="destination_type" value="SHOP" checked>
+                  <span>To our shop</span>
+                </label>
+                <label class="dispatch-tab">
+                  <input type="radio" name="destination_type" value="EXTERNAL">
+                  <span>Sell to a customer</span>
+                </label>
+                <label class="dispatch-tab">
+                  <input type="radio" name="destination_type" value="HOME">
+                  <span>Home use</span>
+                </label>
               </fieldset>
               <div id="disp-shop-box">
                 <label>Shop <select name="destination_shop_id"></select></label>
               </div>
               <div id="disp-ext-box" hidden>
-                <label>Buyer / destination name <input name="destination_name" maxlength="150"></label>
-                <fieldset>
-                  <legend>Is this dispatch a sale?</legend>
-                  <label class="inline"><input type="radio" name="is_sale" value="yes" checked> Yes, a sale</label>
-                  <label class="inline"><input type="radio" name="is_sale" value="no"> No</label>
+                <label>Customer
+                  <input name="destination_name" maxlength="150" placeholder="Pick from the list or type a new name">
+                </label>
+                <label>Price per litre (KSh)
+                  <input name="price_per_litre" type="number" step="0.01" min="0" inputmode="decimal" value="60" readonly>
+                </label>
+                <fieldset class="dispatch-sale-type">
+                  <legend>Payment</legend>
+                  <label class="dispatch-payment">
+                    <input type="radio" name="payment_status" value="PAID" checked>
+                    <span>Paid</span>
+                  </label>
+                  <label class="dispatch-payment">
+                    <input type="radio" name="payment_status" value="UNPAID">
+                    <span>Unpaid</span>
+                  </label>
+                  <label class="dispatch-payment">
+                    <input type="radio" name="payment_status" value="PARTIAL">
+                    <span>Partly paid</span>
+                  </label>
                 </fieldset>
-                <p id="disp-sale-box" class="hint">The owner-set fresh milk price will be used.</p>
-                <div id="disp-nonsale-box" hidden>
-                  <label>Reason
-                    <select name="reason_kind">
-                      <option>Household consumption</option>
-                      <option>Sample</option>
-                      <option>Donation</option>
-                      <option>Other authorised use</option>
-                    </select></label>
-                  <label>More detail (optional) <input name="reason_detail" maxlength="150"></label>
+                <div id="dispatch-partial-payment" hidden>
+                  <label>Amount paid (KSh)
+                    <input name="amount_paid" type="number" step="0.01" min="0.01" inputmode="decimal">
+                  </label>
                 </div>
+                <p id="dispatch-payment-balance-row" class="dispatch-payment-balance" role="status" aria-live="polite">
+                  Remaining balance: <strong id="dispatch-payment-balance">KSh 0.00</strong>
+                </p>
+                <fieldset hidden>
+                  <label class="inline"><input type="radio" name="is_sale" value="yes" checked> Sale</label>
+                  <label class="inline"><input type="radio" name="is_sale" value="no"> Non-sale</label>
+                </fieldset>
               </div>
-            </div>
-            <div>
-              <label>Date and time <input type="datetime-local" name="dispatched_at" required></label>
-              <label>Quantity (litres)
-                <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
-              <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
-              <div class="stock-list" id="disp-farm-stock"></div>
-            </div>
-          </div>
-          <p class="msg" role="alert" hidden></p>
-          <button class="btn primary" type="submit">Save dispatch</button>
-        </form>
-        <div class="card"><h3>Recent dispatches</h3>
-          <div class="table-wrap"><table id="tbl-disp"></table></div></div>
+            </section>
+
+            <section class="dispatch-step" aria-labelledby="dispatch-quantity-title">
+              <div class="dispatch-step-heading">
+                <span class="dispatch-step-number">2</span>
+                <h3 id="dispatch-quantity-title">How many litres?</h3>
+              </div>
+              <div class="dispatch-quantity">
+                <button type="button" class="dispatch-quantity-step" data-qty="-1" aria-label="Decrease litres">−</button>
+                <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" value="0" required>
+                <button type="button" class="dispatch-quantity-step" data-qty="1" aria-label="Increase litres">+</button>
+              </div>
+              <p class="dispatch-available">Available at the farm: <strong id="dispatch-farm-available">0 L</strong></p>
+            </section>
+
+            <section class="dispatch-step" aria-labelledby="dispatch-when-title">
+              <div class="dispatch-step-heading">
+                <span class="dispatch-step-number">3</span>
+                <h3 id="dispatch-when-title">When</h3>
+              </div>
+              <div class="dispatch-date-row">
+                <input type="datetime-local" name="dispatched_at" required>
+                <button type="button" class="btn small" id="dispatch-now">Now</button>
+              </div>
+              <details class="optional-note"><summary>+ Add note</summary>
+                <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              </details>
+            </section>
+
+            <p class="msg" role="alert" hidden></p>
+            <button class="btn primary dispatch-save" type="submit">Save dispatch</button>
+          </form>
+
+          <aside class="dispatch-summary">
+            <section class="card dispatch-farm-card">
+              <h2>Milk at the farm now</h2>
+              <strong class="dispatch-farm-total" id="dispatch-farm-total">0 L</strong>
+              <p class="muted">Fresh milk produced and not yet dispatched</p>
+              <div class="dispatch-summary-row"><span>To the shop today</span><strong id="dispatch-shop-today">0 L</strong></div>
+              <div class="dispatch-summary-row"><span>Sold today</span><strong id="dispatch-sold-today">0 L</strong></div>
+              <div class="dispatch-summary-row"><span>Home use today</span><strong id="dispatch-home-today">0 L</strong></div>
+            </section>
+            <section class="stock-list" id="disp-farm-stock" hidden></section>
+          </aside>
+        </div>
+        <div class="card dispatch-recent"><h3>Recent dispatches</h3>
+          <div class="table-wrap"><table id="tbl-disp"></table></div>
+        </div>
       </section>
 
       <!-- ---------- Receive milk ---------- -->
-      <section id="view-receipts" class="view" hidden>
+      <section id="view-receipts" class="view attendant-view" hidden>
         <div class="grid2">
           <form id="rec-form" class="card">
             <h3>Record milk received at the shop</h3>
@@ -178,7 +406,9 @@
               <input name="quantity_litres" type="number" step="0.001" min="0" inputmode="decimal" required></label>
             <p class="hint" id="rec-diff" hidden></p>
             <label>Date and time received <input type="datetime-local" name="received_at" required></label>
-            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <details class="optional-note"><summary>+ Add note</summary>
+              <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            </details>
             <p class="msg" role="alert" hidden></p>
             <button class="btn primary" type="submit">Save receipt</button>
           </form>
@@ -190,7 +420,7 @@
 
 
       <!-- ---------- Processing ---------- -->
-      <section id="view-processing" class="view" hidden>
+      <section id="view-processing" class="view attendant-view" hidden>
         <div class="grid2">
           <form id="proc-form" class="card">
             <h3>Record yoghurt or maziwa mala making</h3>
@@ -203,7 +433,9 @@
               <input name="output_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
             <p class="hint">Enter what really came out. It does not have to equal the milk used.</p>
             <label>Date and time <input type="datetime-local" name="processed_at" required></label>
-            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <details class="optional-note"><summary>+ Add note</summary>
+              <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            </details>
             <p class="msg" role="alert" hidden></p>
             <button class="btn primary" type="submit">Save processing</button>
           </form>
@@ -213,7 +445,7 @@
       </section>
 
       <!-- ---------- Sales ---------- -->
-      <section id="view-sales" class="view" hidden>
+      <section id="view-sales" class="view attendant-view" hidden>
         <div class="grid2">
           <form id="sale-form" class="card">
             <h3>Record sales</h3>
@@ -223,7 +455,9 @@
             <button type="button" class="btn small" id="sale-add">+ Add another line</button>
             <p class="hint">Leave the price empty to use the list price. If a product was sold at a different price, add it as its own line and type that price.</p>
             <p>Total: <strong id="sale-total">KSh 0.00</strong></p>
-            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <details class="optional-note"><summary>+ Add note</summary>
+              <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            </details>
             <p class="msg" role="alert" hidden></p>
             <button class="btn primary" type="submit">Save sales</button>
           </form>
@@ -242,7 +476,9 @@
               <label>When <input name="dispatched_at" type="datetime-local" required></label>
               <label>Has the buyer paid?
                 <select name="payment_status"><option value="UNPAID">No — unpaid</option><option value="PAID">Yes — paid</option></select></label>
-              <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              <details class="optional-note"><summary>+ Add note</summary>
+                <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              </details>
               <p class="msg" role="alert" hidden></p>
               <button class="btn primary" type="submit">Record buyer sale</button>
             </form>
@@ -252,7 +488,9 @@
               <label id="farm-use-farm-wrap">Farm <select name="farm_id"></select></label>
               <label>Quantity (litres) <input name="quantity_litres" type="number" step="0.001" min="0.001" inputmode="decimal" required></label>
               <label>When <input name="dispatched_at" type="datetime-local" required></label>
-              <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              <details class="optional-note"><summary>+ Add note</summary>
+                <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+              </details>
               <p class="msg" role="alert" hidden></p>
               <button class="btn primary" type="submit">Record personal use</button>
             </form>
@@ -265,8 +503,169 @@
         <div class="card"><h3>Recent sales</h3><div class="table-wrap"><table id="tbl-sales"></table></div></div>
       </section>
 
+      <!-- ---------- Expenses (owner) ---------- -->
+      <section id="view-expenses" class="view attendant-view" hidden>
+        <div class="dashboard-heading">
+          <div>
+            <p class="eyebrow">BUSINESS COSTS</p>
+            <div class="expense-title-row">
+              <h1>Expenses</h1>
+              <div class="chips" id="expense-areas" aria-label="Expense area">
+                <button type="button" class="chip" data-expense-area="FARM">On farm</button>
+                <button type="button" class="chip" data-expense-area="SHOP">On shop</button>
+                <button type="button" class="chip active" data-expense-area="TOTALS">Totals</button>
+              </div>
+              <button type="button" class="btn small expense-export" id="expense-export" title="Print or save the current report as PDF">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 16v4h14v-4" />
+                </svg>
+                Export Report
+              </button>
+            </div>
+            <p class="muted">Record and review farm and shop spending. Expenses are shown separately from sales.</p>
+          </div>
+        </div>
+        <header class="expense-report-header" id="expense-report-header">
+          <div class="expense-report-brand">
+            <span class="expense-report-mark" aria-hidden="true">✦</span>
+            <div><strong id="expense-report-business"></strong><span>Management report</span></div>
+          </div>
+          <h2>Expense &amp; Financial Report</h2>
+          <dl class="expense-report-meta">
+            <div><dt>Reporting period</dt><dd id="expense-report-period"></dd></div>
+            <div><dt>Area</dt><dd id="expense-report-area"></dd></div>
+            <div><dt>Trend grouping</dt><dd id="expense-report-grouping"></dd></div>
+            <div><dt>Prepared by</dt><dd id="expense-report-prepared-by"></dd></div>
+            <div><dt>Generated</dt><dd id="expense-report-generated"></dd></div>
+          </dl>
+        </header>
+        <section class="card bills-to-pay" aria-labelledby="bills-to-pay-title">
+          <div class="bills-heading">
+            <div>
+              <h2 id="bills-to-pay-title">Bills to pay</h2>
+              <p class="muted">Unpaid expenses, oldest first</p>
+            </div>
+            <strong id="bills-to-pay-total"></strong>
+          </div>
+          <div id="bills-to-pay-list" aria-live="polite">
+            <p class="muted">Loading unpaid expenses…</p>
+          </div>
+        </section>
+        <div class="card toolbar expense-toolbar">
+          <div class="expense-filter-heading">
+            <strong>Show expenses for</strong>
+            <span id="expense-range" class="muted"></span>
+          </div>
+          <div class="expense-filter-controls">
+            <form id="expense-date-filter" class="expense-date-filter">
+              <label>From <input type="date" name="date_from" aria-label="Expenses from date"></label>
+              <label>To <input type="date" name="date_to" aria-label="Expenses to date"></label>
+              <button type="submit" class="btn small">Apply dates</button>
+            </form>
+            <div class="chips" id="expense-periods" aria-label="Expense reporting period">
+              <button type="button" class="chip" data-expense-period="week">Past week</button>
+              <button type="button" class="chip active" data-expense-period="month">Past month</button>
+              <button type="button" class="chip" data-expense-period="3months">Past 3 months</button>
+              <button type="button" class="chip" data-expense-period="6months">Past 6 months</button>
+              <button type="button" class="chip" data-expense-period="year">Past year</button>
+            </div>
+          </div>
+        </div>
+        <div class="financial-overview">
+          <div class="card financial-metric">
+            <span class="muted">Revenue (all sales)</span>
+            <strong id="expense-revenue-total">KSh 0.00</strong>
+            <span id="expense-revenue-comparison" class="financial-comparison muted"></span>
+          </div>
+          <div class="card financial-metric">
+            <span class="muted">Expenses</span>
+            <strong id="expense-total">KSh 0.00</strong>
+            <span class="financial-comparison-label">Compared with previous period</span>
+            <span id="expense-comparison" class="financial-comparison muted"></span>
+          </div>
+          <div class="card financial-metric">
+            <span class="muted">Revenue less expenses</span>
+            <strong id="expense-net-total">KSh 0.00</strong>
+            <span class="financial-comparison muted">Based on recorded sales and expenses</span>
+          </div>
+        </div>
+        <div class="expense-trend-layout">
+          <div class="card expense-trend-card">
+            <div class="row-between">
+              <div>
+                <h3>Revenue vs expenses</h3>
+                <p class="muted">Recorded sales revenue against recorded expenses. Net is revenue minus expenses.</p>
+              </div>
+              <label class="expense-trend-granularity">Group by
+                <select id="expense-trend-grain" aria-label="Group financial trend by">
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                </select>
+              </label>
+            </div>
+            <p id="expense-trend-status" class="msg warn" role="status" hidden></p>
+            <div class="chart-box" data-empty="No revenue or expenses recorded in this period">
+              <canvas id="ch-expense-trend"></canvas>
+            </div>
+          </div>
+          <aside class="card expense-insights-card">
+            <h3>What this means</h3>
+            <p id="expense-insights-context" class="muted">Updates with the selected period and grouping.</p>
+            <ul id="expense-insights" class="insight-list" aria-live="polite"></ul>
+          </aside>
+        </div>
+        <div class="expense-layout">
+          <div>
+            <form id="expense-form" class="card">
+              <h3>Record an expense</h3>
+              <div class="grid2 expense-fields">
+                <label>Expense area
+                  <select name="area" required>
+                    <option value="">Choose area</option>
+                    <option value="FARM">On farm</option>
+                    <option value="SHOP">On shop</option>
+                  </select>
+                </label>
+                <label>Date incurred <input type="date" name="expense_date" required></label>
+                <label>Category <select name="category_id" required></select></label>
+                <label>Amount (KSh) <input name="amount" type="number" step="0.01" min="0.01" inputmode="decimal" required></label>
+                <label>Payment status
+                  <select name="payment_status"><option value="UNPAID">Unpaid</option><option value="PAID">Paid</option></select>
+                </label>
+              </div>
+              <label><span id="expense-description-title">Description / notes (optional)</span>
+                <textarea name="description" rows="2" maxlength="4000"></textarea></label>
+              <p class="msg" role="alert" hidden></p>
+              <button class="btn primary" type="submit">Save expense</button>
+            </form>
+          </div>
+          <div class="card expense-chart-card">
+            <h3>Spending by category</h3>
+            <p class="muted">Share of total expenses</p>
+            <div class="chart-box" data-empty="No expenses recorded in this period">
+              <canvas id="ch-expenses"></canvas>
+              <div id="expense-chart-total" class="expense-chart-total">
+                <span>Total expenses</span>
+                <strong id="expense-chart-total-value">KSh 0.00</strong>
+              </div>
+            </div>
+            <div id="expense-category-totals" class="expense-category-totals"></div>
+            <div id="expense-area-totals" class="expense-category-totals"></div>
+          </div>
+        </div>
+        <div class="card"><h3>Expenses in selected period</h3>
+          <div class="table-wrap"><table id="tbl-expenses"></table></div></div>
+        <footer class="expense-report-notes">
+          <h3>Report notes</h3>
+          <p>Expense and revenue figures reflect records entered in the system for the selected period and area. Net is recorded revenue less recorded expenses; it is not a cash-flow or profit statement.</p>
+          <p>Outstanding bills include unpaid balances from all dates as of the report generation time, and are not limited to the selected reporting period.</p>
+          <p>Charts and comparisons use recorded data available when this report was generated. Keep this report with the supporting receipts and source records.</p>
+        </footer>
+      </section>
+
       <!-- ---------- Losses ---------- -->
-      <section id="view-losses" class="view" hidden>
+      <section id="view-losses" class="view attendant-view" hidden>
         <div class="grid2">
           <form id="loss-form" class="card">
             <h3>Record spoiled or lost stock</h3>
@@ -278,7 +677,9 @@
             <label>Reason
               <select name="loss_reason"><option value="SPOILAGE">Spoilage</option><option value="EXPIRY">Expiry</option><option value="SPILLAGE">Spillage</option><option value="OTHER">Other</option></select></label>
             <label>When <input type="datetime-local" name="occurred_at" required></label>
-            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <details class="optional-note"><summary>+ Add note</summary>
+              <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            </details>
             <p class="msg" role="alert" hidden></p>
             <button class="btn primary" type="submit">Save loss</button>
           </form>
@@ -288,7 +689,7 @@
       </section>
 
       <!-- ---------- Daily closing ---------- -->
-      <section id="view-closing" class="view" hidden>
+      <section id="view-closing" class="view attendant-view" hidden>
         <p id="closing-banner" class="msg" hidden></p>
         <div class="grid2">
           <form id="close-form" class="card">
@@ -302,7 +703,9 @@
               <input name="count_YOGHURT" type="number" step="0.001" min="0" inputmode="decimal" required></label>
             <label>Maziwa mala counted (litres)
               <input name="count_MAZIWA_MALA" type="number" step="0.001" min="0" inputmode="decimal" required></label>
-            <label>Notes (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            <details class="optional-note"><summary>+ Add note</summary>
+              <label>Note (optional) <textarea name="notes" rows="2" maxlength="500"></textarea></label>
+            </details>
             <p class="msg" role="alert" hidden></p>
             <button class="btn primary" type="submit">Submit closing</button>
           </form>
@@ -351,9 +754,9 @@
         </div>
       </section>
 
-      <!-- ---------- Users (owner) ---------- -->
+      <!-- ---------- Users ---------- -->
       <section id="view-users" class="view" hidden>
-        <div class="grid2">
+        <div class="users-layout">
           <form id="user-form" class="card">
             <h3>Add a person</h3>
             <label>Full name <input name="full_name" required maxlength="150"></label>
@@ -366,7 +769,8 @@
             <p class="msg" role="alert" hidden></p>
             <button class="btn primary" type="submit">Add person</button>
           </form>
-          <div class="card"><h3>Everyone with access</h3><div class="table-wrap"><table id="tbl-users"></table></div></div>
+          <div id="users-list-card" class="card"><h3>Everyone with access</h3><div class="table-wrap"><table id="tbl-users"></table></div></div>
+          <p id="user-password-required" class="hint" hidden>Open your profile button to change your temporary password before continuing.</p>
         </div>
       </section>
 
@@ -376,24 +780,8 @@
           <div class="table-wrap"><table id="tbl-activity"></table></div></div>
       </section>
 
-      <!-- ---------- Account (everyone) ---------- -->
-      <section id="view-account" class="view" hidden>
-        <p id="pw-banner" class="msg warn" hidden>You are using a temporary password. Please choose your own password to continue.</p>
-        <div class="grid2">
-          <form id="pw-form" class="card">
-            <h3>Change my password</h3>
-            <label>Current password <input name="current_password" type="password" required autocomplete="current-password"></label>
-            <label>New password (at least 8 characters) <input name="new_password" type="password" required minlength="8" autocomplete="new-password"></label>
-            <label>Repeat the new password <input name="new_password2" type="password" required minlength="8" autocomplete="new-password"></label>
-            <p class="msg" role="alert" hidden></p>
-            <button class="btn primary" type="submit">Change password</button>
-          </form>
-          <div class="card"><h3>My account</h3><div id="account-info" class="stock-list"></div></div>
-        </div>
-      </section>
-
       <!-- ---------- Alerts ---------- -->
-      <section id="view-alerts" class="view" hidden>
+      <section id="view-alerts" class="view attendant-view" hidden>
         <div class="card">
           <div class="row-between"><h3>Alerts</h3><button class="btn small" id="read-all">Mark all as read</button></div>
           <div id="alerts-list"></div>
@@ -402,8 +790,36 @@
     </main>
   </div>
 
+  <dialog id="user-role-dialog" class="user-role-dialog" aria-labelledby="user-role-title">
+    <form id="user-role-form" class="card">
+      <h2 id="user-role-title">Change role</h2>
+      <p id="user-role-name" class="muted"></p>
+      <label>New role
+        <select name="role" required>
+          <option value="MILKER">Milker</option>
+          <option value="SHOP_ATTENDANT">Shop attendant</option>
+          <option value="OWNER">Owner</option>
+        </select>
+      </label>
+      <p class="msg" role="alert" hidden></p>
+      <div class="button-row">
+        <button class="btn" type="button" id="user-role-cancel">Cancel</button>
+        <button class="btn primary" type="submit">Save role</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="sale-receipt-dialog" class="sale-receipt-dialog" aria-labelledby="sale-receipt-title">
+    <article id="sale-receipt-content" class="receipt-paper"></article>
+    <div class="receipt-actions">
+      <button id="sale-receipt-print" type="button" class="btn primary">Print / Save as PDF</button>
+      <button id="sale-receipt-close" type="button" class="btn">Close</button>
+    </div>
+  </dialog>
+
   <!-- Libraries and our own scripts (order matters) -->
   <script src="/static/vendor/chart.umd.js"></script>
+  <script src="/static/js/offline.js"></script>
   <script src="/static/js/api.js"></script>
   <script src="/static/js/charts.js"></script>
   <script src="/static/js/app.js"></script>
